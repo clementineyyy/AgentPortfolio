@@ -82,13 +82,14 @@ export default function OpenStocksCanvas() {
     initialState: {
       available_cash: totalCash,
       investment_summary: {} as any,
-      investment_portfolio: [] as InvestmentPortfolio[]
+      investment_portfolio: [] as InvestmentPortfolio[],
+      tool_logs: []
     }
   })
 
   useCoAgentStateRender({
     name: "crewaiAgent",
-    render: ({state}) => <ToolLogs logs={state.tool_logs} />
+    render: ({ state }) => <ToolLogs logs={state?.tool_logs} />
   })
 
   useCopilotAction({

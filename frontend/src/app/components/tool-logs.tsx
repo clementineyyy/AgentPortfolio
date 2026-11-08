@@ -1,7 +1,7 @@
 "use client"
 
 import { Check } from "lucide-react"
-import React, { useEffect } from "react"
+import React from "react"
 
 interface ToolLog {
   id: string | number
@@ -10,16 +10,14 @@ interface ToolLog {
 }
 
 interface ToolLogsProps {
-  logs: ToolLog[]
+  logs?: ToolLog[] | null
 }
 
-export function ToolLogs({ logs }: ToolLogsProps) {
-    useEffect(() => {
-        console.log(logs, "logs")
-    }, [])
+export function ToolLogs({ logs = [] }: ToolLogsProps) {
+  const toolLogs = Array.isArray(logs) ? logs : []
   return (
     <div className="flex flex-col gap-2 p-2">
-      {logs.map((log) => (
+      {toolLogs.map((log) => (
         <div
           key={log.id}
           className={`flex items-center gap-3 rounded-lg px-3 py-2 border text-sm font-medium font-['Roobert'] shadow-sm transition-colors
