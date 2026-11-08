@@ -1,0 +1,10 @@
+/.venv
+/agent/__pycache__
+/frontend/.next
+/frontend/.npm-cache
+/frontend/node_modules
+
+# Local environment files and secrets
+**/.env
+**/.env.*
+!**/.env.example
