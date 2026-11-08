@@ -1,10 +1,13 @@
 /.venv
 /agent/__pycache__
 /frontend/.next
+/frontend/*.tsbuildinfo
 /frontend/.npm-cache
 /frontend/node_modules
+/img
 
 # Local environment files and secrets
 **/.env
 **/.env.*
 !**/.env.example
+改进.md

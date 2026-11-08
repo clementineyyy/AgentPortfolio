@@ -41,9 +41,9 @@ export function LineChartComponent({ data, size = "normal" }: LineChartComponent
                 fontSize: tooltipFontSize,
                 fontFamily: "Plus Jakarta Sans",
               }}
-              formatter={(value: any, name: string) => [
-                value != null && typeof value === 'number' ? `$${value.toLocaleString()}` : "N/A",
-                name.toLowerCase() === "portfolio" ? "Portfolio" : "SPY",
+              formatter={(value, name) => [
+                typeof value === "number" ? `$${value.toLocaleString()}` : "N/A",
+                String(name ?? "").toLowerCase() === "portfolio" ? "Portfolio" : "SPY",
               ]}
             />
             <Legend

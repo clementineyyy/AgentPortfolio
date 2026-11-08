@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { PromptPanel } from "./components/prompt-panel"
 import { GenerativeCanvas } from "./components/generative-canvas"
 import { ComponentTree } from "./components/component-tree"
@@ -12,6 +12,7 @@ import { AllocationTableComponent } from "@/app/components/chart-components/allo
 import { useCopilotChatSuggestions } from "@copilotkit/react-ui"
 import { INVESTMENT_SUGGESTION_PROMPT } from "@/utils/prompts"
 import { ToolLogs } from "./components/tool-logs"
+import { getToolLogs } from "./components/tool-logs-state.mjs"
 
 export interface PortfolioState {
   id: string
@@ -89,16 +90,13 @@ export default function OpenStocksCanvas() {
 
   useCoAgentStateRender({
     name: "crewaiAgent",
-    render: ({ state }) => <ToolLogs logs={state?.tool_logs} />
+    render: ({ state }) => <ToolLogs logs={getToolLogs(state)} />
   })
 
   useCopilotAction({
     name: "render_standard_charts_and_table",
     description: "This is an action to render a standard chart and table. The chart can be a bar chart or a line chart. The table can be a table of data.",
     renderAndWaitForResponse: ({ args, respond, status }) => {
-      useEffect(() => {
-        console.log(args, "argsargsargsargsargsaaa")
-      }, [args])
       return (
         <>
           {(args?.investment_summary?.percent_allocation_per_stock && args?.investment_summary?.percent_return_per_stock && args?.investment_summary?.performanceData) &&
@@ -236,11 +234,7 @@ export default function OpenStocksCanvas() {
   // const currentPortfolioValue = currentState.currentPortfolioValue || investedAmount
 
 
-  useEffect(() => {
-    getBenchmarkData()
-  }, [])
-
-  function getBenchmarkData() {
+  const getBenchmarkData = useCallback(() => {
     let result: PortfolioState = {
       id: "aapl-nvda",
       trigger: "apple nvidia",
@@ -263,7 +257,11 @@ export default function OpenStocksCanvas() {
       currentPortfolioValue: totalCash
     }
     setCurrentState(result)
-  }
+  }, [totalCash])
+
+  useEffect(() => {
+    getBenchmarkData()
+  }, [getBenchmarkData])
 
 
 

@@ -39,7 +39,7 @@ export function BarChartComponent({ data, size = "normal", onClick }: BarChartCo
                 fontSize: tooltipFontSize,
                 fontFamily: "Plus Jakarta Sans",
               }}
-              formatter={(value: number) => [`${value.toFixed(1)}%`, "Return"]}
+              formatter={(value) => [`${Number(value ?? 0).toFixed(1)}%`, "Return"]}
             />
             <Bar onClick={(data, index) => {
               if (size === "normal") {
