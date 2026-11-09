@@ -217,7 +217,9 @@ export default function OpenStocksCanvas() {
 
   useCopilotReadable({
     description: "This is the current state of the portfolio",
-    value: JSON.stringify(state.investment_portfolio)
+    // CopilotKit requires every readable context value to be a string. The
+    // agent state can be incomplete during its initial render or hydration.
+    value: JSON.stringify(state.investment_portfolio ?? [])
   })
 
   useCopilotChatSuggestions({
