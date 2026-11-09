@@ -11,3 +11,7 @@
 **/.env.*
 !**/.env.example
 改进.md
+MISSION.md
+RESOURCES.md
+/lessons
+assets/lesson.css
