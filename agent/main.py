@@ -29,6 +29,7 @@ from ag_ui.core import (
     StateDeltaEvent          
 )
 from ag_ui.encoder import EventEncoder  # Encoder for converting events to streamable format
+from request_models import AgentRunInput, normalize_agent_state
 
 # Import our custom stock analysis workflow
 from stock_analysis import StockAnalysisFlow
@@ -75,7 +76,7 @@ class AgentState(CopilotKitState):
 # ===============================================================================
 
 @app.post("/crewai-agent")
-async def crewai_agent(input_data: RunAgentInput):
+async def crewai_agent(input_data: AgentRunInput):
     """
     Main API endpoint for processing stock analysis requests.
     
@@ -92,6 +93,7 @@ async def crewai_agent(input_data: RunAgentInput):
         StreamingResponse: Real-time stream of events during agent execution
     """
     try:
+        agent_state = normalize_agent_state(input_data.state)
 
         async def event_generator():
             """
@@ -135,9 +137,9 @@ async def crewai_agent(input_data: RunAgentInput):
                 StateSnapshotEvent(
                     type=EventType.STATE_SNAPSHOT, 
                     snapshot={
-                        "available_cash": input_data.state["available_cash"],        # Current cash balance
-                        "investment_summary": input_data.state["investment_summary"], # Previous analysis results
-                        "investment_portfolio": input_data.state["investment_portfolio"], # Current holdings
+                        "available_cash": agent_state["available_cash"],        # Current cash balance
+                        "investment_summary": agent_state["investment_summary"], # Previous analysis results
+                        "investment_portfolio": agent_state["investment_portfolio"], # Current holdings
                         "tool_logs": []  # Reset tool logs for new analysis
                     }
                 )
@@ -149,8 +151,8 @@ async def crewai_agent(input_data: RunAgentInput):
                 messages=input_data.messages,                                # Conversation history
                 be_stock_data=None,                                         # Will be populated during analysis
                 be_arguments=None,                                          # Will be populated during analysis
-                available_cash=input_data.state["available_cash"],          # Current cash
-                investment_portfolio=input_data.state["investment_portfolio"], # Current portfolio
+                available_cash=agent_state["available_cash"],          # Current cash
+                investment_portfolio=agent_state["investment_portfolio"], # Current portfolio
                 tool_logs=[]                                                # Progress tracking
             )
             
@@ -160,7 +162,7 @@ async def crewai_agent(input_data: RunAgentInput):
                 StockAnalysisFlow().kickoff_async(inputs={
                     "state": state,                                          # Agent state
                     "emit_event": emit_event,                               # Event emission callback
-                    "investment_portfolio": input_data.state["investment_portfolio"]  # Portfolio data
+                    "investment_portfolio": agent_state["investment_portfolio"]  # Portfolio data
                 })
             )
             
