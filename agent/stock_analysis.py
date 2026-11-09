@@ -224,9 +224,12 @@ class StockAnalysisFlow(Flow):
             await asyncio.sleep(0)  # Allow other tasks to run
             
             # Step 2.3: Call OpenAI to analyze user input and extract investment data
-            model = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            model = OpenAI(
+                api_key=os.getenv("OPENAI_API_KEY"),
+                base_url=os.getenv("OPENAI_BASE_URL") or None,
+            )
             response = model.chat.completions.create(
-                model="gpt-4o-mini",
+                model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
                 messages= self.state['state']['messages'],
                 tools= [extract_relevant_data_from_user_prompt]  # Function calling tool
             )
@@ -283,13 +286,9 @@ class StockAnalysisFlow(Flow):
 
             
         except Exception as e:
-            # Step 2.6: Handle any errors during processing
-            print(f"Error in chat method: {e}")
-            # Create a message with a generated ID if response is not available
-            error_id = str(uuid.uuid4())
-            a_message = AssistantMessage(id=error_id, content="", role="assistant")
-            self.state['state']["messages"].append(a_message)
-            return "end"
+            # Fail the flow so downstream stages cannot present an API failure as success.
+            print(f"Error in chat method ({type(e).__name__})")
+            raise
     
     
     @listen("chat")
@@ -975,9 +974,12 @@ class StockAnalysisFlow(Flow):
         current_tickers = self.be_arguments['ticker_symbols']
         
         # Step 5.5: Call OpenAI to generate bull/bear insights
-        model = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        model = OpenAI(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url=os.getenv("OPENAI_BASE_URL") or None,
+        )
         response = model.chat.completions.create(
-            model="gpt-4o-mini",
+            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             messages=[
                 {"role": "system", "content": insights_prompt},  # Custom insights prompt
                 {"role": "user", "content": json.dumps(current_tickers)},  # Send ticker list

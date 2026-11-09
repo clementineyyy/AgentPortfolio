@@ -20,6 +20,7 @@ from ag_ui.core import (
     EventType,               
     RunStartedEvent,        
     RunFinishedEvent,        
+    RunErrorEvent,
     TextMessageStartEvent,   
     TextMessageEndEvent,     
     TextMessageContentEvent, 
@@ -219,6 +220,26 @@ async def crewai_agent(input_data: AgentRunInput):
                         # Minimal delay to ensure chart data is fully processed
                         await asyncio.sleep(0.2)
                         break  # Exit early to make graph interactive
+
+            # Surface workflow failures as failed AG-UI runs, not empty successes.
+            if agent_task.done() and agent_task.exception() is not None:
+                yield encoder.encode(
+                    StateDeltaEvent(
+                        type=EventType.STATE_DELTA,
+                        delta=[{"op": "replace", "path": "/tool_logs", "value": []}],
+                    )
+                )
+                yield encoder.encode(
+                    RunErrorEvent(
+                        type=EventType.RUN_ERROR,
+                        message=(
+                            "The AI provider request failed. Check the API key, "
+                            "base URL, and model configuration."
+                        ),
+                        code="agent_workflow_failed",
+                    )
+                )
+                return
 
             # Step 7: Clear tool logs after workflow completion
             # This prevents old progress logs from cluttering the UI

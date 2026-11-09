@@ -1,3 +1,16 @@
+## Run the App
+
+The backend and frontend servers are already running and available for debugging. If test results report that a server is stopped, restart it with these commands, then continue testing:
+
+```bash
+# Start backend
+uv run python agent/main.py
+
+# In another terminal, start frontend
+cd frontend
+npm run dev
+```
+
 ## Agent skills
 
 ### Issue tracker
