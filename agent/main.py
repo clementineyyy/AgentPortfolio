@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse  # For streaming real-time respo
 
 # Standard Python libraries
 import uuid  
+import logging
 from typing import Any  
 import os  
 import uvicorn  
@@ -163,7 +164,8 @@ async def crewai_agent(input_data: AgentRunInput):
                 StockAnalysisFlow().kickoff_async(inputs={
                     "state": state,                                          # Agent state
                     "emit_event": emit_event,                               # Event emission callback
-                    "investment_portfolio": agent_state["investment_portfolio"]  # Portfolio data
+                    "investment_portfolio": agent_state["investment_portfolio"], # Portfolio data
+                    "request_id": input_data.run_id,
                 })
             )
             
@@ -377,6 +379,11 @@ def main():
     """
     # Get port from environment variable or use default
     port = int(os.getenv("PORT", "8000"))
+    log_level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     
     # Start uvicorn server with configuration
     uvicorn.run(

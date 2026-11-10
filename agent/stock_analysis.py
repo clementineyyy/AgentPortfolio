@@ -28,71 +28,35 @@ import numpy as np
 import pandas as pd  
 
 # Import custom prompts for the AI models
-from prompts import system_prompt, insights_prompt
+if __package__:
+    from .prompts import insights_prompt
+    from .query_routing import process_stock_request, tool_result_messages
+else:
+    from prompts import insights_prompt
+    from query_routing import process_stock_request, tool_result_messages
 
 # Load environment variables (like API keys) from .env file
 load_dotenv()
 
 
-# ===============================================================================
-# TOOL DEFINITIONS
-# ===============================================================================
+def _has_stock_data(data):
+    """Return whether a downloaded price frame contains usable rows."""
+    return isinstance(data, pd.DataFrame) and not data.empty
 
-# Tool definition for extracting investment data from user input
-# This tool uses OpenAI's function calling feature to parse user queries
-# and extract structured data like stock symbols, investment amounts, etc.
-extract_relevant_data_from_user_prompt = {
-    "type": "function",  # Required field for OpenAI function calling
-    "function": {
-        "name": "extract_relevant_data_from_user_prompt",
-        "description": "Gets the data like ticker symbols, amount of dollars to be invested, interval of investment.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                # List of stock ticker symbols (e.g., ['AAPL', 'GOOGL'])
-                "ticker_symbols": {
-                    "type": "array",
-                    "items": {
-                        "type": "string"
-                    },
-                    "description": "A list of stock ticker symbols, e.g. ['AAPL', 'GOOGL']."
-                },
-                # Date when the investment should start
-                "investment_date": {
-                    "type": "string",
-                    "description": "The date of investment, e.g. '2023-01-01'.",
-                    "format": "date"
-                },
-                # Amount of money to invest in each stock (parallel array to ticker_symbols)
-                "amount_of_dollars_to_be_invested": {
-                    "type": "array",
-                    "items": {
-                        "type": "number"
-                    },
-                    "description": "The amount of dollars to be invested, e.g. [10000, 20000, 30000]."
-                },
-                # Investment strategy: single purchase or dollar-cost averaging over time
-                "interval_of_investment": {
-                    "type": "string",
-                    "description": "The interval of investment, e.g. '1d', '5d', '1mo', '3mo', '6mo', '1y'. If the user did not specify the interval, assume it as 'single_shot'.",
-                    "enum": ["1d", "5d", "7d", "1mo", "3mo", "6mo", "1y", "2y", "3y", "4y", "5y", "single_shot"]
-                },
-                # Whether to add to actual portfolio or sandbox/test portfolio
-                "to_be_added_in_portfolio": {
-                    "type": "boolean",
-                    "description": "True if the user wants to add it to the current portfolio; false if they want to add it to the sandbox portfolio."
-                }
-            },
-            # These fields are required for the tool to function properly
-            "required": [
-                "ticker_symbols",
-                "investment_date",
-                "amount_of_dollars_to_be_invested",
-                "to_be_added_in_portfolio"
-            ]
-        }
-    }
-}
+
+def _append_stock_data_failure_reply(messages):
+    """Ensure a failed market-data lookup produces a user-visible reply."""
+    messages.append(
+        AssistantMessage(
+            role="assistant",
+            content=(
+                "I couldn't retrieve stock price data from Yahoo Finance. "
+                "The request may have been rate limited; please try again later."
+            ),
+            id=str(uuid.uuid4()),
+        )
+    )
+
 
 # Tool definition for generating bull/bear insights about stocks or portfolios
 # This tool generates positive (bullish) and negative (bearish) analysis
@@ -164,8 +128,8 @@ class StockAnalysisFlow(Flow):
     """
     Main workflow class that orchestrates the stock analysis process.
     This flow consists of multiple stages:
-    1. start() - Initialize the system prompt with portfolio data
-    2. chat() - Parse user input and extract investment parameters
+    1. start() - Initialize the request-routing system prompt
+    2. chat() - Classify intent and extract parameters only for investments
     3. simulation() - Gather historical stock data
     4. allocation() - Calculate portfolio allocation and performance
     5. insights() - Generate bull/bear insights about the investments
@@ -175,23 +139,18 @@ class StockAnalysisFlow(Flow):
     @start()
     def start(self):
         """
-        Step 1: Initialize the workflow
-        - Replace placeholder in system prompt with actual portfolio data
-        - This sets up the AI assistant with context about the current portfolio
+        Step 1: Initialize the workflow state.
         """
-        # Inject current portfolio data into the system prompt template
-        self.state['state']["messages"][0].content = system_prompt.replace(
-            "{PORTFOLIO_DATA_PLACEHOLDER}", json.dumps(self.state["investment_portfolio"])
-        )
         return self.state
 
     @listen("start")
     async def chat(self):
         """
-        Step 2: Parse user input and extract investment parameters
+        Step 2: Classify the user request and extract investment parameters only
+        when its intent is investment.
         - Create a tool log entry to show progress to the user
-        - Use OpenAI to analyze the user's message and extract structured data
-        - Return next step based on whether structured data was extracted
+        - Route market analysis and general questions to a text response
+        - Ask for missing investment details before simulation
         """
         try:
             # Step 2.1: Create a new tool log entry to track progress
@@ -223,15 +182,17 @@ class StockAnalysisFlow(Flow):
             )
             await asyncio.sleep(0)  # Allow other tasks to run
             
-            # Step 2.3: Call OpenAI to analyze user input and extract investment data
+            # Step 2.3: Classify first. Only investment requests proceed to
+            # the investment extraction tool.
             model = OpenAI(
                 api_key=os.getenv("OPENAI_API_KEY"),
                 base_url=os.getenv("OPENAI_BASE_URL") or None,
             )
-            response = model.chat.completions.create(
-                model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-                messages= self.state['state']['messages'],
-                tools= [extract_relevant_data_from_user_prompt]  # Function calling tool
+            outcome = process_stock_request(
+                model,
+                self.state['state']['messages'],
+                self.state["investment_portfolio"],
+                request_id=self.state.get("request_id"),
             )
             
             # Step 2.4: Update tool log status to completed
@@ -250,41 +211,32 @@ class StockAnalysisFlow(Flow):
             )
             await asyncio.sleep(0)
             
-            # Step 2.5: Check if OpenAI extracted structured data via function calling
-            if(response.choices[0].finish_reason == "tool_calls"):
-                # Convert tool calls to our internal format
-                tool_calls = [
-                    convert_tool_call(tc)
-                    for tc in response.choices[0].message.tool_calls
-                ]
-                # Create assistant message with tool calls
-                a_message = AssistantMessage(
-                    role="assistant", tool_calls=tool_calls, id=response.id
-                )
-                self.state['state']["messages"].append(a_message)
-                
-                # Add tool message response for each tool call (required by OpenAI API)
-                for tc in tool_calls:
-                    tool_message = ToolMessage(
-                        id=str(uuid.uuid4()),
-                        role="tool",
-                        tool_call_id=tc["id"],
-                        content="Investment parameters extracted successfully"
+            if outcome.reply is not None:
+                self.state['state']["messages"].append(
+                    AssistantMessage(
+                        id=str(uuid.uuid4()), content=outcome.reply, role="assistant"
                     )
-                    self.state['state']["messages"].append(tool_message)
-                
-                return "simulation"  # Proceed to data gathering step
-            else:
-                # No structured data extracted, just respond with regular message
-                a_message = AssistantMessage(
-                    id=response.id,
-                    content=response.choices[0].message.content,
-                    role="assistant",
                 )
-                self.state['state']["messages"].append(a_message)
-                return "end"  # Skip to end since no investment data to process
+                return "end"
 
-            
+            if not outcome.tool_calls:
+                raise RuntimeError("A validated investment request had no extraction tool call.")
+
+            self.state['state']["messages"].append(
+                AssistantMessage(
+                    role="assistant",
+                    tool_calls=outcome.tool_calls,
+                    id=str(uuid.uuid4()),
+                )
+            )
+            self.state['state']["messages"].extend(
+                tool_result_messages(
+                    outcome.tool_calls,
+                    "Investment parameters extracted successfully",
+                )
+            )
+            return "simulation"
+
         except Exception as e:
             # Fail the flow so downstream stages cannot present an API failure as success.
             print(f"Error in chat method ({type(e).__name__})")
@@ -427,8 +379,33 @@ class StockAnalysisFlow(Flow):
         self.be_arguments = arguments  # Store extracted arguments for next step
         
         # Check if stock data is empty
-        if self.be_stock_data.empty:
+        if not _has_stock_data(self.be_stock_data):
             print("Warning: No stock data retrieved. This might be due to invalid tickers or date range.")
+            _append_stock_data_failure_reply(self.state['state']["messages"])
+            # Keep the failed download visible in the UI and do not let a
+            # downstream listener treat the empty frame as investable data.
+            index = len(self.state['state']["tool_logs"]) - 1
+            self.state.get("emit_event")(
+                StateDeltaEvent(
+                    type=EventType.STATE_DELTA,
+                    delta=[
+                        {
+                            "op": "replace",
+                            "path": f"/tool_logs/{index}/status",
+                            "value": "failed",
+                        },
+                        {
+                            "op": "add",
+                            "path": "/tool_logs/-",
+                            "value": {
+                                "id": str(uuid.uuid4()),
+                                "message": "No stock price data was returned. Please try again later.",
+                                "status": "failed",
+                            },
+                        },
+                    ],
+                )
+            )
             return "end"
         
         # Step 3.12: Mark stock data gathering as completed
@@ -460,6 +437,12 @@ class StockAnalysisFlow(Flow):
         - Compare portfolio performance against SPY (S&P 500) benchmark
         - Generate performance data for charting
         """
+        # CrewAI listeners can still run after simulation returns its routing
+        # value. Yahoo Finance may return an empty frame when it rate-limits us.
+        stock_data = getattr(self, "be_stock_data", None)
+        if not _has_stock_data(stock_data):
+            return "end"
+
         # Step 4.1: Ensure we have tool calls with investment data
         # Find the last AssistantMessage with tool calls
         last_assistant_message = None
@@ -921,6 +904,12 @@ class StockAnalysisFlow(Flow):
         - Use OpenAI to generate positive and negative analysis
         - Add insights to the investment summary for balanced perspective
         """
+        # Allocation is also a listener and may finish without producing data.
+        # Do not call the model for a request that could not be simulated.
+        stock_data = getattr(self, "be_stock_data", None)
+        if not _has_stock_data(stock_data):
+            return "end"
+
         # Step 5.1: Ensure we have tool calls from previous step
         # Find the last AssistantMessage with tool calls
         last_assistant_message = None
@@ -1029,27 +1018,3 @@ class StockAnalysisFlow(Flow):
         - Returns the final state with all analysis results
         """
         return self.state
-
-
-# ===============================================================================
-# UTILITY FUNCTIONS
-# ===============================================================================
-
-def convert_tool_call(tc):
-    """
-    Utility function to convert OpenAI tool call format to our internal format
-    
-    Args:
-        tc: OpenAI tool call object
-        
-    Returns:
-        dict: Formatted tool call dictionary compatible with our message system
-    """
-    return {
-        "id": tc.id,
-        "type": "function",
-        "function": {
-            "name": tc.function.name,
-            "arguments": tc.function.arguments,
-        },
-    }

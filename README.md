@@ -69,6 +69,8 @@ This project shows how to create an AI agent that streams the portfolio analysis
 ## Development Notes
 - If your editor reports missing imports, ensure it points to the same Python environment where you installed dependencies (`uv`, `venv`, `conda`, etc.). Running `uv sync` in the repo root is recommended, but any standard Python environment manager works.
 - The FastAPI app is in `agent/main.py`; core workflow logic is in `agent/stock_analysis.py`.
+- The request router lives in `agent/query_routing.py`; automated backend tests live in `agent/tests/`. Run them with `uv run python -m unittest discover -s agent/tests -p "test_*.py"` from the repository root.
+- Live intent samples are in `agent/evals/stock_request_intents.jsonl`. Run `uv run python agent/evaluate_query_intents.py` to check them against the configured model; this command requires `OPENAI_API_KEY` and reports only case IDs and predicted labels.
 - In `frontend`, run `npm run dev` while developing. Stop the dev server before running `npm run build`; both Next.js commands write to the same `.next` directory and must not run at the same time. If a Turbopack runtime module is missing, stop every frontend dev server, move `frontend/.next` aside, then restart `npm run dev` to regenerate the cache.
 - Before submitting frontend changes, run `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` from `frontend`, one at a time.
 

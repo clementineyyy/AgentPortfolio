@@ -1,0 +1,14 @@
+{"id":"invest_en_complete","prompt":"Invest in Apple with 5k dollars since Jan 2026","expected_intent":"investment"}
+{"id":"invest_en_missing","prompt":"Invest in Apple","expected_intent":"investment"}
+{"id":"invest_en_simulation","prompt":"Show how $2,000 in NVDA would have performed since 2024-03-01","expected_intent":"investment"}
+{"id":"invest_en_add","prompt":"Add 10 shares of Microsoft to my portfolio starting June 2025","expected_intent":"investment"}
+{"id":"market_en_current","prompt":"Analyze Apple's current stock trend","expected_intent":"market_analysis"}
+{"id":"market_en_price","prompt":"What is Nvidia's latest price and recent performance?","expected_intent":"market_analysis"}
+{"id":"market_en_news","prompt":"Summarize recent news affecting Tesla stock","expected_intent":"market_analysis"}
+{"id":"general_en_concept","prompt":"Explain the price-to-earnings ratio","expected_intent":"general"}
+{"id":"invest_zh_complete","prompt":"从2026年1月开始投资5000美元买苹果股票","expected_intent":"investment"}
+{"id":"invest_zh_missing","prompt":"把苹果股票加入我的投资组合","expected_intent":"investment"}
+{"id":"market_zh_current","prompt":"分析Apple公司股票当前走势","expected_intent":"market_analysis"}
+{"id":"market_zh_news","prompt":"最近有哪些新闻影响英伟达股价？","expected_intent":"market_analysis"}
+{"id":"general_zh_concept","prompt":"什么是市盈率？","expected_intent":"general"}
+{"id":"mixed_invest_analysis","prompt":"Invest $5,000 in NVDA since Jan 2026 and summarize how it performed","expected_intent":"investment"}
