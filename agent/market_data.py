@@ -54,8 +54,7 @@ def historical_prices(symbol: str, start_date: str, end_date: str, interval: str
             if frame.empty:
                 raise MarketDataError("No usable prices were returned for this symbol and date range.")
             if interval == "3mo":
-                frame = frame.resample("QE").last().dropna()
-                frame = frame.loc[frame.index <= pd.Timestamp(end_date)]
+                frame = frame.groupby(frame.index.to_period("Q"), sort=True).tail(1)
             return frame
         except (HTTPError, URLError, TimeoutError) as error:
             if attempt == 2:

@@ -34,7 +34,7 @@ class MarketDataTest(unittest.TestCase):
         self.assertIn("adjust=true", request.call_args.args[0])
         self.assertIn("interval=1day", request.call_args.args[0])
 
-    def test_quarterly_request_samples_monthly_prices_at_quarter_end(self):
+    def test_quarterly_request_samples_last_available_month_in_each_quarter(self):
         response = type("Response", (), {
             "__enter__": lambda self: self,
             "__exit__": lambda self, *args: None,
@@ -48,8 +48,8 @@ class MarketDataTest(unittest.TestCase):
         with patch("agent.market_data.urlopen", return_value=response):
             prices = historical_prices("AAPL", "2025-01-01", "2025-04-30", "3mo")
 
-        self.assertEqual(prices.index.strftime("%Y-%m-%d").tolist(), ["2025-03-31"])
-        self.assertEqual(prices["Close"].tolist(), [110.0])
+        self.assertEqual(prices.index.strftime("%Y-%m-%d").tolist(), ["2025-03-31", "2025-04-30"])
+        self.assertEqual(prices["Close"].tolist(), [110.0, 112.0])
 
     def test_missing_key_fails_without_request(self):
         with patch.dict(os.environ, {}, clear=True), patch("agent.market_data.urlopen") as request:
