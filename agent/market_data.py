@@ -24,7 +24,7 @@ def historical_prices(symbol: str, start_date: str, end_date: str, interval: str
 
     params = urlencode({
         "symbol": symbol,
-        "interval": "3month" if interval == "3mo" else interval,
+        "interval": "1month" if interval == "3mo" else interval,
         "start_date": start_date,
         "end_date": end_date,
         "order": "ASC",
@@ -53,6 +53,9 @@ def historical_prices(symbol: str, start_date: str, end_date: str, interval: str
             frame = frame.loc[:, ["Close"]].dropna().sort_index()
             if frame.empty:
                 raise MarketDataError("No usable prices were returned for this symbol and date range.")
+            if interval == "3mo":
+                frame = frame.resample("QE").last().dropna()
+                frame = frame.loc[frame.index <= pd.Timestamp(end_date)]
             return frame
         except (HTTPError, URLError, TimeoutError) as error:
             if attempt == 2:
@@ -62,4 +65,6 @@ def historical_prices(symbol: str, start_date: str, end_date: str, interval: str
             if attempt == 2:
                 raise MarketDataError("The market data provider returned an invalid response.") from error
             time.sleep(0.25 * (2 ** attempt))
+        except (AttributeError, KeyError, TypeError, ValueError) as error:
+            raise MarketDataError("The market data provider returned invalid price data.") from error
     raise MarketDataError("The market data provider is temporarily unavailable.")
