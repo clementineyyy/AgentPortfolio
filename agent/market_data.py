@@ -15,12 +15,16 @@ class MarketDataError(RuntimeError):
     """Raised when historical prices cannot be retrieved or normalized."""
 
 
+class MarketDataConfigurationError(MarketDataError):
+    """Raised when the backend provider credentials are not configured."""
+
+
 @lru_cache(maxsize=128)
 def historical_prices(symbol: str, start_date: str, end_date: str, interval: str) -> pd.DataFrame:
     """Return adjusted close prices indexed by date for a US equity symbol."""
     api_key = os.getenv("TWELVEDATA_API_KEY")
     if not api_key:
-        raise MarketDataError("Historical market data is not configured.")
+        raise MarketDataConfigurationError("Historical market data is not configured.")
 
     params = urlencode({
         "symbol": symbol,

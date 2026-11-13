@@ -30,11 +30,11 @@ import pandas as pd
 if __package__:
     from .prompts import insights_prompt
     from .query_routing import process_stock_request, tool_result_messages
-    from .market_data import MarketDataError, historical_prices
+    from .market_data import MarketDataConfigurationError, MarketDataError, historical_prices
 else:
     from prompts import insights_prompt
     from query_routing import process_stock_request, tool_result_messages
-    from market_data import MarketDataError, historical_prices
+    from market_data import MarketDataConfigurationError, MarketDataError, historical_prices
 
 # Load environment variables (like API keys) from .env file
 load_dotenv()
@@ -45,15 +45,22 @@ def _has_stock_data(data):
     return isinstance(data, pd.DataFrame) and not data.empty
 
 
-def _append_stock_data_failure_reply(messages):
+def _append_stock_data_failure_reply(messages, error=None):
     """Ensure a failed market-data lookup produces a user-visible reply."""
+    if isinstance(error, MarketDataConfigurationError):
+        content = (
+            "Historical market data is not configured. Set TWELVEDATA_API_KEY in "
+            "agent/.env, then restart the backend server."
+        )
+    else:
+        content = (
+            "I couldn't retrieve the required historical price data. "
+            "Check the stock symbols and date range, then try again later."
+        )
     messages.append(
         AssistantMessage(
             role="assistant",
-            content=(
-                "I couldn't retrieve the required historical price data. "
-                "Check the stock symbols and date range, then try again later."
-            ),
+            content=content,
             id=str(uuid.uuid4()),
         )
     )
@@ -342,6 +349,7 @@ class StockAnalysisFlow(Flow):
         print(f"Debug: Downloading data for all tickers: {all_tickers}")
         
         end_date = datetime.today().strftime("%Y-%m-%d")
+        market_data_error = None
         try:
             frames = [
                 historical_prices(ticker, investment_date, end_date, "3mo").rename(
@@ -351,6 +359,7 @@ class StockAnalysisFlow(Flow):
             ]
             self.be_stock_data = pd.concat(frames, axis=1).sort_index()
         except MarketDataError as error:
+            market_data_error = error
             print(f"Market data lookup failed: {error}")
             self.be_stock_data = pd.DataFrame()
 
@@ -360,7 +369,9 @@ class StockAnalysisFlow(Flow):
         # Check if stock data is empty
         if not _has_stock_data(self.be_stock_data):
             print("Warning: No stock data retrieved. This might be due to invalid tickers or date range.")
-            _append_stock_data_failure_reply(self.state['state']["messages"])
+            _append_stock_data_failure_reply(
+                self.state['state']["messages"], market_data_error
+            )
             # Keep the failed download visible in the UI and do not let a
             # downstream listener treat the empty frame as investable data.
             index = len(self.state['state']["tool_logs"]) - 1
@@ -726,7 +737,7 @@ class StockAnalysisFlow(Flow):
             spy_prices = spy_prices.reindex(stock_data.index, method="ffill")
         except MarketDataError as e:
             print(f"SPY benchmark lookup failed: {e}")
-            _append_stock_data_failure_reply(self.state['state']["messages"])
+            _append_stock_data_failure_reply(self.state['state']["messages"], e)
             return "end"
 
         # Step 4.14: Simulate investing the same total amount in SPY for comparison

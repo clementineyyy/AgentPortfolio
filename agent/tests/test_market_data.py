@@ -3,7 +3,8 @@ import os
 import unittest
 from unittest.mock import patch
 
-from agent.market_data import MarketDataError, historical_prices
+from agent.market_data import MarketDataConfigurationError, MarketDataError, historical_prices
+from agent.stock_analysis import _append_stock_data_failure_reply
 
 
 class MarketDataTest(unittest.TestCase):
@@ -53,9 +54,20 @@ class MarketDataTest(unittest.TestCase):
 
     def test_missing_key_fails_without_request(self):
         with patch.dict(os.environ, {}, clear=True), patch("agent.market_data.urlopen") as request:
-            with self.assertRaises(MarketDataError):
+            with self.assertRaisesRegex(MarketDataError, "Historical market data is not configured"):
                 historical_prices("AAPL", "2024-01-01", "2025-01-01", "3mo")
         request.assert_not_called()
+
+    def test_missing_key_assistant_reply_identifies_backend_configuration(self):
+        messages = []
+
+        _append_stock_data_failure_reply(
+            messages,
+            MarketDataConfigurationError("Historical market data is not configured."),
+        )
+
+        self.assertIn("TWELVEDATA_API_KEY", messages[-1].content)
+        self.assertIn("agent/.env", messages[-1].content)
 
     def test_provider_error_does_not_return_fabricated_prices(self):
         response = type("Response", (), {
