@@ -7,7 +7,7 @@ This project shows how to create an AI agent that streams the portfolio analysis
 - [FastAPI](https://fastapi.tiangolo.com) + [Uvicorn](https://www.uvicorn.org) for the backend API
 - [CopilotKit](https://github.com/CopilotKit/CopilotKit) + AG UI Protocol for streaming agent events
 - [CrewAI](https://github.com/crewAIInc/crewAI) for the agent workflow
-- [yfinance](https://github.com/ranaroussi/yfinance) and [pandas](https://pandas.pydata.org) for market data and analysis
+- [Twelve Data](https://twelvedata.com) and [pandas](https://pandas.pydata.org) for historical market data and analysis
 
 ## Setup
 
@@ -32,6 +32,7 @@ This project shows how to create an AI agent that streams the portfolio analysis
      OPENAI_API_KEY=your-key
      OPENAI_BASE_URL=
      OPENAI_MODEL=gpt-4o-mini
+     TWELVEDATA_API_KEY=your-twelve-data-api-key
      ```
    For SiliconFlow, set `OPENAI_BASE_URL=https://api.siliconflow.cn/v1` and use a model ID enabled for your account, such as `deepseek-ai/DeepSeek-V3`. The agent uses an OpenAI-compatible API; the API key must belong to the provider configured by `OPENAI_BASE_URL`.
    - `frontend/.env` (frontend):

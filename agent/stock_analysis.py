@@ -23,7 +23,6 @@ from datetime import datetime
 # External libraries
 from openai import OpenAI  
 from dotenv import load_dotenv  
-import yfinance as yf  
 import numpy as np  
 import pandas as pd  
 
@@ -31,9 +30,11 @@ import pandas as pd
 if __package__:
     from .prompts import insights_prompt
     from .query_routing import process_stock_request, tool_result_messages
+    from .market_data import MarketDataError, historical_prices
 else:
     from prompts import insights_prompt
     from query_routing import process_stock_request, tool_result_messages
+    from market_data import MarketDataError, historical_prices
 
 # Load environment variables (like API keys) from .env file
 load_dotenv()
@@ -50,8 +51,8 @@ def _append_stock_data_failure_reply(messages):
         AssistantMessage(
             role="assistant",
             content=(
-                "I couldn't retrieve stock price data from Yahoo Finance. "
-                "The request may have been rate limited; please try again later."
+                "I couldn't retrieve the required historical price data. "
+                "Check the stock symbols and date range, then try again later."
             ),
             id=str(uuid.uuid4()),
         )
@@ -248,7 +249,7 @@ class StockAnalysisFlow(Flow):
         """
         Step 3: Gather historical stock data for analysis
         - Extract investment parameters from the previous step
-        - Download historical stock price data from Yahoo Finance
+        - Download historical stock price data from the configured provider
         - Prepare data for portfolio simulation
         """
         # Step 3.1: Ensure we have tool calls with investment data
@@ -331,51 +332,29 @@ class StockAnalysisFlow(Flow):
         combined_portfolio = existing_portfolio + new_investments
         self.investment_portfolio = json.dumps(combined_portfolio)
         
-        # Step 3.6: Update state with new investment portfolio
-        self.state.get("emit_event")(
-            StateDeltaEvent(
-                type=EventType.STATE_DELTA,
-                delta=[
-                    {
-                        "op": "replace",
-                        "path": f"/investment_portfolio",
-                        "value": json.loads(self.investment_portfolio),
-                    }
-                ],
-            )
-        )
-        await asyncio.sleep(2)
-        
         # Step 3.7: Extract investment parameters
         tickers = arguments["ticker_symbols"]
         investment_date = arguments["investment_date"]
-        current_year = datetime.now().year
         
-        # Step 3.8: Validate and adjust investment date (limit to 4 years for data availability)
-        if current_year - int(investment_date[:4]) > 4:
-            print("investment date is more than 4 years ago")
-            investment_date = f"{current_year - 4}-01-01"
-            
-        # Step 3.9: Calculate appropriate history period for data download
-        if current_year - int(investment_date[:4]) == 0:
-            history_period = "1y"
-        else:
-            history_period = f"{current_year - int(investment_date[:4])}y"
-
-        # Step 3.10: Download historical stock data using Yahoo Finance
+        # Step 3.10: Download historical stock data through the provider boundary
         # Get all tickers from combined portfolio (existing + new)
         all_tickers = list(set(tickers + [inv["ticker"] for inv in existing_portfolio]))
         print(f"Debug: Downloading data for all tickers: {all_tickers}")
         
-        data = yf.download(
-            all_tickers,
-            start=investment_date,
-            end=datetime.today().strftime("%Y-%m-%d"),
-            interval="3mo",  # Quarterly data points
-        )
-        
-        # Step 3.11: Extract closing prices and store data for next step
-        self.be_stock_data = data["Close"]  # Store closing prices DataFrame
+        end_date = datetime.today().strftime("%Y-%m-%d")
+        try:
+            frames = [
+                historical_prices(ticker, investment_date, end_date, "3mo").rename(
+                    columns={"Close": ticker}
+                )
+                for ticker in all_tickers
+            ]
+            self.be_stock_data = pd.concat(frames, axis=1).sort_index()
+        except MarketDataError as error:
+            print(f"Market data lookup failed: {error}")
+            self.be_stock_data = pd.DataFrame()
+
+        # Step 3.11: Store normalized closing prices for the simulation
         self.be_arguments = arguments  # Store extracted arguments for next step
         
         # Check if stock data is empty
@@ -407,6 +386,19 @@ class StockAnalysisFlow(Flow):
                 )
             )
             return "end"
+
+        # Publish the new holdings only after all required prices are available.
+        self.state.get("emit_event")(
+            StateDeltaEvent(
+                type=EventType.STATE_DELTA,
+                delta=[{
+                    "op": "replace",
+                    "path": "/investment_portfolio",
+                    "value": json.loads(self.investment_portfolio),
+                }],
+            )
+        )
+        await asyncio.sleep(0)
         
         # Step 3.12: Mark stock data gathering as completed
         index = len(self.state['state']["tool_logs"]) - 1
@@ -438,7 +430,7 @@ class StockAnalysisFlow(Flow):
         - Generate performance data for charting
         """
         # CrewAI listeners can still run after simulation returns its routing
-        # value. Yahoo Finance may return an empty frame when it rate-limits us.
+        # value. A provider may return an empty frame when data is unavailable.
         stock_data = getattr(self, "be_stock_data", None)
         if not _has_stock_data(stock_data):
             return "end"
@@ -711,12 +703,11 @@ class StockAnalysisFlow(Flow):
             # Use start and end dates from stock_data, with daily interval for better granularity
             start_date = stock_data.index[0]
             end_date = stock_data.index[-1]
-            spy_prices = yf.download(
+            spy_prices = historical_prices(
                 spy_ticker,
-                start=start_date,
-                end=end_date,
-                interval="1d",  # Use daily interval for better data alignment
-                progress=False  # Suppress download progress
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d"),
+                "1day",
             )["Close"]
             
             # Fix: Use the first available SPY date if our start date doesn't exist
@@ -733,10 +724,10 @@ class StockAnalysisFlow(Flow):
             
             # Align SPY prices to our stock_data dates using forward fill
             spy_prices = spy_prices.reindex(stock_data.index, method="ffill")
-        except Exception as e:
-            print("Error fetching SPY data:", e)
-            # Create dummy SPY data if fetch fails
-            spy_prices = pd.Series([None] * len(stock_data), index=stock_data.index)
+        except MarketDataError as e:
+            print(f"SPY benchmark lookup failed: {e}")
+            _append_stock_data_failure_reply(self.state['state']["messages"])
+            return "end"
 
         # Step 4.14: Simulate investing the same total amount in SPY for comparison
         spy_shares = 0.0

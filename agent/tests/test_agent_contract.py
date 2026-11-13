@@ -32,7 +32,7 @@ class AgentRequestContractTest(unittest.TestCase):
 
 class EmptyStockDataRegressionTest(unittest.TestCase):
     def test_rate_limited_download_is_not_treated_as_investable_data(self):
-        # yfinance returns this shape after a rate limit or unavailable range.
+        # A provider may return no rows for a rate limit or unsupported range.
         empty_prices = pd.DataFrame()
 
         self.assertFalse(_has_stock_data(empty_prices))
@@ -44,8 +44,8 @@ class EmptyStockDataRegressionTest(unittest.TestCase):
         _append_stock_data_failure_reply(messages)
 
         self.assertEqual(messages[-1].role, "assistant")
-        self.assertIn("Yahoo Finance", messages[-1].content)
-        self.assertIn("rate limited", messages[-1].content)
+        self.assertIn("historical price data", messages[-1].content)
+        self.assertIn("date range", messages[-1].content)
 
 
 if __name__ == "__main__":
