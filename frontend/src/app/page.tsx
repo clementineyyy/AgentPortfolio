@@ -119,7 +119,6 @@ export default function OpenStocksCanvas() {
               <button hidden={status == "complete"}
                 className="mt-4 rounded-full px-6 py-2 bg-green-50 text-green-700 border border-green-200 shadow-sm hover:bg-green-100 transition-colors font-semibold text-sm"
                 onClick={() => {
-                  debugger
                   if (respond) {
                     setTotalCash(args?.investment_summary?.cash)
                     setCurrentState({
@@ -158,7 +157,6 @@ export default function OpenStocksCanvas() {
               <button hidden={status == "complete"}
                 className="rounded-full px-6 py-2 bg-red-50 text-red-700 border border-red-200 shadow-sm hover:bg-red-100 transition-colors font-semibold text-sm ml-2"
                 onClick={() => {
-                  debugger
                   if (respond) {
                     respond("Data rendering rejected. Just give a summary of the rejected investments by not making any tool calls")
                   }
@@ -184,7 +182,6 @@ export default function OpenStocksCanvas() {
           <button hidden={status == "complete"}
             className="mt-4 rounded-full px-6 py-2 bg-green-50 text-green-700 border border-green-200 shadow-sm hover:bg-green-100 transition-colors font-semibold text-sm"
             onClick={() => {
-              debugger
               if (respond) {
                 setSandBoxPortfolio([...sandBoxPortfolio, {
                   performanceData: args?.investment_summary?.performanceData.map((item: any) => ({
@@ -202,7 +199,6 @@ export default function OpenStocksCanvas() {
           <button hidden={status == "complete"}
             className="rounded-full px-6 py-2 bg-red-50 text-red-700 border border-red-200 shadow-sm hover:bg-red-100 transition-colors font-semibold text-sm ml-2"
             onClick={() => {
-              debugger
               if (respond) {
                 respond("Data rendering rejected. Just give a summary of the rejected investments")
               }

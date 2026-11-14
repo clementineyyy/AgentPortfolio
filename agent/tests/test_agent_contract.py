@@ -2,7 +2,11 @@ import unittest
 import pandas as pd
 
 from agent.request_models import AgentRunInput, normalize_agent_state
-from agent.stock_analysis import _append_stock_data_failure_reply, _has_stock_data
+from agent.stock_analysis import (
+    _append_stock_data_failure_reply,
+    _has_stock_data,
+    _resume_chart_action,
+)
 
 
 class AgentRequestContractTest(unittest.TestCase):
@@ -46,6 +50,40 @@ class EmptyStockDataRegressionTest(unittest.TestCase):
         self.assertEqual(messages[-1].role, "assistant")
         self.assertIn("historical price data", messages[-1].content)
         self.assertIn("date range", messages[-1].content)
+
+
+class ChartActionResumeRegressionTest(unittest.TestCase):
+    def test_accepting_chart_action_finishes_without_restarting_analysis(self):
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "chart-call-1",
+                        "function": {"name": "render_standard_charts_and_table"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "chart-call-1",
+                "content": "Data rendered successfully. Provide summary without making any tool calls",
+            },
+        ]
+
+        resumed = _resume_chart_action(messages)
+
+        self.assertTrue(resumed)
+        self.assertEqual(messages[-1].role, "assistant")
+        self.assertIn("accepted", messages[-1].content)
+
+    def test_unrelated_tool_response_does_not_short_circuit_analysis(self):
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "extract-1", "function": {"name": "extract_relevant_data_from_user_prompt"}}]},
+            {"role": "tool", "tool_call_id": "extract-1", "content": "ok"},
+        ]
+
+        self.assertFalse(_resume_chart_action(messages))
 
 
 if __name__ == "__main__":

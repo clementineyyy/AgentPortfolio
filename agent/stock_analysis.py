@@ -66,6 +66,63 @@ def _append_stock_data_failure_reply(messages, error=None):
     )
 
 
+def _field(value, name, default=None):
+    """Read a field from AG-UI's dict or typed message representations."""
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _chart_action_response(messages):
+    """Return the user's chart decision when resuming a chart action."""
+    if not messages:
+        return None
+
+    response = messages[-1]
+    if _field(response, "role") != "tool":
+        return None
+
+    tool_call_id = _field(response, "tool_call_id")
+    if not tool_call_id:
+        return None
+
+    chart_actions = {"render_standard_charts_and_table", "render_custom_charts"}
+    for message in reversed(messages[:-1]):
+        if _field(message, "role") != "assistant":
+            continue
+        for call in _field(message, "tool_calls", []) or []:
+            if _field(call, "id") != tool_call_id:
+                continue
+            function = _field(call, "function", {})
+            if _field(function, "name") not in chart_actions:
+                return None
+
+            content = str(_field(response, "content", "")).lower()
+            if "reject" in content or "rejected" in content:
+                return "rejected"
+            if "success" in content or "accept" in content:
+                return "accepted"
+            return None
+    return None
+
+
+def _resume_chart_action(messages):
+    """Complete a chart action response without restarting investment analysis."""
+    decision = _chart_action_response(messages)
+    if not decision:
+        return False
+
+    decision_text = (
+        "The simulated investment was accepted. The chart and portfolio summary are shown above."
+        if decision == "accepted"
+        else "The simulated investment was rejected. No changes were made to the portfolio."
+    )
+    messages.append(
+        AssistantMessage(id=str(uuid.uuid4()), role="assistant", content=decision_text)
+    )
+    return True
+
+
 # Tool definition for generating bull/bear insights about stocks or portfolios
 # This tool generates positive (bullish) and negative (bearish) analysis
 # to provide balanced perspective on investment decisions
@@ -161,6 +218,9 @@ class StockAnalysisFlow(Flow):
         - Ask for missing investment details before simulation
         """
         try:
+            if _resume_chart_action(self.state['state']["messages"]):
+                return "end"
+
             # Step 2.1: Create a new tool log entry to track progress
             tool_log_id = str(uuid.uuid4())
             self.state['state']["tool_logs"].append(
