@@ -1,6 +1,11 @@
 import unittest
+import sys
+from pathlib import Path
 import pandas as pd
+from fastapi.testclient import TestClient
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from agent.main import app
 from agent.request_models import AgentRunInput, normalize_agent_state
 from agent.stock_analysis import (
     _append_stock_data_failure_reply,
@@ -10,6 +15,20 @@ from agent.stock_analysis import (
 
 
 class AgentRequestContractTest(unittest.TestCase):
+    def test_health_endpoint_reports_api_is_live(self):
+        response = TestClient(app).get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ok"})
+
+    def test_models_endpoint_lists_configured_model(self):
+        with unittest.mock.patch.dict("os.environ", {"OPENAI_MODEL": "test-model"}):
+            response = TestClient(app).get("/v1/models")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["object"], "list")
+        self.assertEqual(response.json()["data"][0]["id"], "test-model")
+
     def test_accepts_http_agent_protocol_version(self):
         payload = {
             "threadId": "thread-1",

@@ -47,6 +47,29 @@ from copilotkit import CopilotKitState
 app = FastAPI()
 
 
+@app.get("/health")
+async def health_check():
+    """Return the basic liveness status of the API process."""
+    return {"status": "ok"}
+
+
+@app.get("/v1/models")
+async def list_models():
+    """Expose the configured model through the OpenAI-compatible models API."""
+    model_id = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": model_id,
+                "object": "model",
+                "created": 0,
+                "owned_by": "configured-provider",
+            }
+        ],
+    }
+
+
 # ===============================================================================
 # STATE MANAGEMENT
 # ===============================================================================
