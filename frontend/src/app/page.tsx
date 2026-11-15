@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useState } from "react"
 import { PromptPanel } from "./components/prompt-panel"
 import { GenerativeCanvas } from "./components/generative-canvas"
 import { ComponentTree } from "./components/component-tree"
@@ -59,19 +59,32 @@ export interface InvestmentPortfolio {
   amount: number
 }
 
-
-export default function OpenStocksCanvas() {
-  const [currentState, setCurrentState] = useState<PortfolioState>({
-    id: "",
-    trigger: "",
-    performanceData: [],
+function createBenchmarkData(totalCash: number): PortfolioState {
+  return {
+    id: "aapl-nvda",
+    trigger: "apple nvidia",
+    performanceData: [
+      { date: "Jan 2023", portfolio: 10000, spy: 10000 },
+      { date: "Mar 2023", portfolio: 10200, spy: 10200 },
+      { date: "Jun 2023", portfolio: 11000, spy: 11000 },
+      { date: "Sep 2023", portfolio: 10800, spy: 10800 },
+      { date: "Dec 2023", portfolio: 11500, spy: 11500 },
+      { date: "Mar 2024", portfolio: 12200, spy: 12200 },
+      { date: "Jun 2024", portfolio: 12800, spy: 12800 },
+      { date: "Sep 2024", portfolio: 13100, spy: 13100 },
+      { date: "Dec 2024", portfolio: 13600, spy: 13600 },
+    ],
     allocations: [],
     returnsData: [],
     bullInsights: [],
     bearInsights: [],
-    currentPortfolioValue: 0,
-    totalReturns: 0
-  })
+    totalReturns: 0,
+    currentPortfolioValue: totalCash,
+  }
+}
+
+export default function OpenStocksCanvas() {
+  const [currentState, setCurrentState] = useState<PortfolioState>(() => createBenchmarkData(1_000_000))
   const [sandBoxPortfolio, setSandBoxPortfolio] = useState<SandBoxPortfolioState[]>([])
   const [selectedStock, setSelectedStock] = useState<string | null>(null)
   const [showComponentTree, setShowComponentTree] = useState(false)
@@ -230,37 +243,6 @@ export default function OpenStocksCanvas() {
 
   // const availableCash = totalCash - investedAmount
   // const currentPortfolioValue = currentState.currentPortfolioValue || investedAmount
-
-
-  const getBenchmarkData = useCallback(() => {
-    let result: PortfolioState = {
-      id: "aapl-nvda",
-      trigger: "apple nvidia",
-      performanceData: [
-        { date: "Jan 2023", portfolio: 10000, spy: 10000 },
-        { date: "Mar 2023", portfolio: 10200, spy: 10200 },
-        { date: "Jun 2023", portfolio: 11000, spy: 11000 },
-        { date: "Sep 2023", portfolio: 10800, spy: 10800 },
-        { date: "Dec 2023", portfolio: 11500, spy: 11500 },
-        { date: "Mar 2024", portfolio: 12200, spy: 12200 },
-        { date: "Jun 2024", portfolio: 12800, spy: 12800 },
-        { date: "Sep 2024", portfolio: 13100, spy: 13100 },
-        { date: "Dec 2024", portfolio: 13600, spy: 13600 },
-      ],
-      allocations: [],
-      returnsData: [],
-      bullInsights: [],
-      bearInsights: [],
-      totalReturns: 0,
-      currentPortfolioValue: totalCash
-    }
-    setCurrentState(result)
-  }, [totalCash])
-
-  useEffect(() => {
-    getBenchmarkData()
-  }, [getBenchmarkData])
-
 
 
   return (
