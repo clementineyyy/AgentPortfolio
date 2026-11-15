@@ -2,7 +2,11 @@ import unittest
 
 import pandas as pd
 
-from agent.stock_analysis import _build_backtest_date_notice, _daily_backtest_series
+from agent.stock_analysis import (
+    _build_backtest_date_notice,
+    _daily_backtest_series,
+    _plan_single_shot_transactions,
+)
 
 
 class BacktestDateNoticeTest(unittest.TestCase):
@@ -41,6 +45,31 @@ class BacktestDateNoticeTest(unittest.TestCase):
 
 
 class DailyBacktestSeriesTest(unittest.TestCase):
+    def test_transactions_enter_on_their_own_dates_and_positions_grow_over_time(self):
+        prices = pd.DataFrame(
+            {"AAPL": [100.0, 110.0, 120.0], "TSLA": [50.0, 60.0, 70.0]},
+            index=pd.to_datetime(["2026-01-02", "2026-06-01", "2026-06-02"]),
+        )
+        transactions = [
+            {"ticker": "AAPL", "amount": 5000, "investment_date": "2026-01-01"},
+            {"ticker": "TSLA", "amount": 10000, "investment_date": "2026-06-01"},
+        ]
+
+        plan = _plan_single_shot_transactions(prices, transactions, 15000)
+        values, _ = _daily_backtest_series(
+            prices,
+            plan["holdings"],
+            plan["entry_dates"],
+            {"AAPL": pd.DataFrame(), "TSLA": pd.DataFrame()},
+            plan["position_history"],
+        )
+
+        self.assertEqual(plan["entry_dates"]["AAPL"], pd.Timestamp("2026-01-02"))
+        self.assertEqual(plan["entry_dates"]["TSLA"], pd.Timestamp("2026-06-01"))
+        self.assertEqual(values[0]["portfolio"], 5000)
+        self.assertEqual(values[1]["portfolio"], 15500)
+        self.assertEqual(plan["total_invested_per_stock"], {"AAPL": 5000, "TSLA": 10000})
+
     def test_daily_values_include_dividend_cash_only_on_pay_date(self):
         prices = pd.DataFrame(
             {"AAPL": [10.0, 11.0, 12.0]},

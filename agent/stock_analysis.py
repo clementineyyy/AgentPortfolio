@@ -171,6 +171,58 @@ def _daily_backtest_series(prices, positions, entry_dates, dividends, position_h
     return result, dividend_cash
 
 
+def _plan_single_shot_transactions(prices, transactions, starting_cash):
+    """Apply each one-time purchase at its own requested entry date."""
+    tickers = list(dict.fromkeys(item["ticker"] for item in transactions))
+    holdings = {ticker: 0.0 for ticker in tickers}
+    invested = {ticker: 0.0 for ticker in tickers}
+    entry_dates = {}
+    investment_log = []
+    add_funds_dates = []
+    position_history = {}
+    total_cash = float(starting_cash)
+    transactions_by_date = {}
+
+    for transaction in transactions:
+        ticker = transaction["ticker"]
+        requested_date = pd.Timestamp(transaction["investment_date"]).normalize()
+        ticker_prices = prices.loc[prices.index >= requested_date, ticker].dropna()
+        if ticker_prices.empty:
+            return {"unavailable_ticker": ticker}
+        entry_date = ticker_prices.index[0]
+        transactions_by_date.setdefault(entry_date, []).append(
+            (ticker, float(transaction["amount"]), float(ticker_prices.iloc[0]))
+        )
+
+    for day in prices.index.sort_values():
+        for ticker, amount, price in transactions_by_date.get(day, []):
+            entry_dates.setdefault(ticker, day)
+            if total_cash >= amount and amount > 0 and price > 0:
+                shares = amount / price
+                holdings[ticker] += shares
+                invested[ticker] += amount
+                total_cash -= amount
+                investment_log.append(
+                    f"{day.date()}: Bought {shares:.6f} shares of {ticker} at the daily close ${price:.2f} (cost: ${amount:.2f})"
+                )
+            else:
+                add_funds_dates.append((str(day.date()), ticker, price, total_cash))
+                investment_log.append(
+                    f"{day.date()}: Not enough total cash to buy {ticker}. Allocated: ${amount:.2f}, Available: ${total_cash:.2f}"
+                )
+        position_history[day] = holdings.copy()
+
+    return {
+        "holdings": holdings,
+        "total_invested_per_stock": invested,
+        "entry_dates": entry_dates,
+        "investment_log": investment_log,
+        "add_funds_dates": add_funds_dates,
+        "total_cash": total_cash,
+        "position_history": position_history,
+    }
+
+
 def _field(value, name, default=None):
     """Read a field from AG-UI's dict or typed message representations."""
     if isinstance(value, dict):
@@ -481,23 +533,18 @@ class StockAnalysisFlow(Flow):
             return "end"
         
         # Check if required keys exist in arguments
-        if "ticker_symbols" not in arguments or "amount_of_dollars_to_be_invested" not in arguments:
+        if "investments" not in arguments:
             print(f"Error: Missing required keys in arguments. Available keys: {list(arguments.keys())}")
             return "end"
         
         # Create new investments list
-        amounts = arguments["amount_of_dollars_to_be_invested"]
-        # If only one amount is provided, split it equally among all tickers
-        if len(amounts) == 1 and len(arguments["ticker_symbols"]) > 1:
-            amount_per_ticker = amounts[0] / len(arguments["ticker_symbols"])
-            amounts = [amount_per_ticker] * len(arguments["ticker_symbols"])
-        
         new_investments = [
             {
-                "ticker": ticker,
-                "amount": amounts[index],
+                "ticker": transaction["ticker"],
+                "amount": transaction["amount"],
+                "investment_date": transaction["investment_date"],
             }
-            for index, ticker in enumerate(arguments["ticker_symbols"])
+            for transaction in arguments["investments"]
         ]
         
         # Combine existing and new investments
@@ -505,8 +552,8 @@ class StockAnalysisFlow(Flow):
         self.investment_portfolio = json.dumps(combined_portfolio)
         
         # Step 3.7: Extract investment parameters
-        tickers = arguments["ticker_symbols"]
-        investment_date = arguments["investment_date"]
+        tickers = list(dict.fromkeys(item["ticker"] for item in new_investments))
+        investment_date = min(item["investment_date"] for item in new_investments)
         
         # Step 3.10: Download historical stock data through the provider boundary
         # Get all tickers from combined portfolio (existing + new)
@@ -665,13 +712,13 @@ class StockAnalysisFlow(Flow):
         # Step 4.4: Extract data from previous steps
         stock_data = self.be_stock_data  # DataFrame: index=date, columns=tickers
         args = self.be_arguments
-        current_tickers = args["ticker_symbols"]  # Tickers from current query
-        investment_date = args["investment_date"]
-        amounts = args["amount_of_dollars_to_be_invested"]  # list, one per ticker
-        # If only one amount is provided, split it equally among all tickers
-        if len(amounts) == 1 and len(current_tickers) > 1:
-            amount_per_ticker = amounts[0] / len(current_tickers)
-            amounts = [amount_per_ticker] * len(current_tickers)
+        transactions = args["investments"]
+        current_tickers = list(dict.fromkeys(item["ticker"] for item in transactions))
+        investment_date = min(item["investment_date"] for item in transactions)
+        amounts_by_ticker = {ticker: 0.0 for ticker in current_tickers}
+        for transaction in transactions:
+            amounts_by_ticker[transaction["ticker"]] += float(transaction["amount"])
+        amounts = [amounts_by_ticker[ticker] for ticker in current_tickers]
         interval = args.get("interval_of_investment", "single_shot")
         
         # Get all tickers from combined portfolio
@@ -720,55 +767,23 @@ class StockAnalysisFlow(Flow):
 
         # Step 4.8: Execute investment strategy based on interval
         if interval == "single_shot":
-            # Buy at the first available close on or after the requested date.
-            
-            # Loop through each ticker and attempt to buy allocated amount
-            for idx, ticker in enumerate(current_tickers):
-                ticker_prices = stock_data.loc[stock_data.index >= requested_date, ticker].dropna()
-                if ticker_prices.empty:
-                    _append_stock_data_failure_reply(
-                        self.state["state"]["messages"],
-                        MarketDataError(f"No price data was returned for {ticker} in the requested date range."),
-                    )
-                    self.be_stock_data = pd.DataFrame()
-                    return "end"
-                first_date = ticker_prices.index[0]
-                price = float(ticker_prices.iloc[0])
-                entry_dates[ticker] = first_date
-                
-                # Step 4.8.1: Check if price data is available
-                if np.isnan(price):
-                    investment_log.append(
-                        f"{first_date.date()}: No price data for {ticker}, could not invest."
-                    )
-                    add_funds_needed = True
-                    add_funds_dates.append(
-                        (str(first_date.date()), ticker, price, amounts[idx])
-                    )
-                    continue
-                    
-                # Step 4.8.2: Calculate how much to invest in this ticker
-                allocated = amounts[idx]
-                
-                # Step 4.8.3: Check if we have enough cash and allocation is sufficient
-                if total_cash >= allocated and allocated > 0 and price > 0:
-                    shares_to_buy = allocated / price
-                    holdings[ticker] += shares_to_buy
-                    total_invested_per_stock[ticker] = allocated
-                    total_cash -= allocated
-                    investment_log.append(
-                        f"{first_date.date()}: Bought {shares_to_buy:.6f} shares of {ticker} at the daily close ${price:.2f} (cost: ${allocated:.2f})"
-                    )
-                else:
-                    # Step 4.8.4: Insufficient funds for this ticker
-                    investment_log.append(
-                        f"{first_date.date()}: Not enough total cash to buy {ticker} at ${price:.2f}. Allocated: ${allocated:.2f}, Available: ${total_cash:.2f}"
-                    )
-                    add_funds_needed = True
-                    add_funds_dates.append(
-                        (str(first_date.date()), ticker, price, total_cash)
-                    )
-            # No further purchases on subsequent dates for single-shot strategy
+            plan = _plan_single_shot_transactions(stock_data, transactions, total_cash)
+            if "unavailable_ticker" in plan:
+                ticker = plan["unavailable_ticker"]
+                _append_stock_data_failure_reply(
+                    self.state["state"]["messages"],
+                    MarketDataError(f"No price data was returned for {ticker} in the requested date range."),
+                )
+                self.be_stock_data = pd.DataFrame()
+                return "end"
+            holdings.update(plan["holdings"])
+            entry_dates.update(plan["entry_dates"])
+            total_invested_per_stock.update(plan["total_invested_per_stock"])
+            investment_log.extend(plan["investment_log"])
+            add_funds_dates.extend(plan["add_funds_dates"])
+            add_funds_needed = bool(add_funds_dates)
+            total_cash = plan["total_cash"]
+            position_history = plan["position_history"]
         else:
             # DOLLAR-COST AVERAGING (DCA) STRATEGY: Spread investments over time
             for date, row in stock_data.iterrows():
@@ -821,7 +836,7 @@ class StockAnalysisFlow(Flow):
             holdings,
             entry_dates,
             dividend_data,
-            position_history if interval != "single_shot" else None,
+            position_history if position_history else None,
         )
         if not entry_dates:
             _append_stock_data_failure_reply(

@@ -29,26 +29,19 @@ EXTRACTION_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "ticker_symbols": {
-                    "anyOf": [
-                        {"type": "array", "items": {"type": "string"}},
-                        {"type": "null"},
-                    ],
-                    "description": "Explicitly requested stock tickers; null if not specified.",
-                },
-                "investment_date": {
-                    "anyOf": [
-                        {"type": "string", "format": "date"},
-                        {"type": "null"},
-                    ],
-                    "description": "Explicitly requested start date as YYYY-MM-DD; null if absent.",
-                },
-                "amount_of_dollars_to_be_invested": {
-                    "anyOf": [
-                        {"type": "array", "items": {"type": "number"}},
-                        {"type": "null"},
-                    ],
-                    "description": "Explicitly stated investment amounts; null if absent.",
+                "investments": {
+                    "type": "array",
+                    "description": "One record per explicitly requested investment transaction, in prompt order. Keep repeated purchases of the same ticker as separate records. Never split one amount across multiple stocks unless the user explicitly requests an equal/per-stock amount.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ticker": {"type": ["string", "null"]},
+                            "amount": {"type": ["number", "null"]},
+                            "investment_date": {"type": ["string", "null"], "format": "date"},
+                        },
+                        "required": ["ticker", "amount", "investment_date"],
+                        "additionalProperties": False,
+                    },
                 },
                 "interval_of_investment": {
                     "type": "string",
@@ -61,9 +54,7 @@ EXTRACTION_TOOL = {
                 },
             },
             "required": [
-                "ticker_symbols",
-                "investment_date",
-                "amount_of_dollars_to_be_invested",
+                "investments",
                 "to_be_added_in_portfolio",
             ],
         },
@@ -176,13 +167,14 @@ def process_stock_request(model_client, messages, investment_portfolio, request_
     )
     arguments = _required_tool_arguments(response, EXTRACTION_TOOL_NAME)
     user_text = _latest_user_text(messages)
+    arguments = _normalize_investment_arguments(arguments, user_text)
     missing = _missing_investment_fields(arguments, user_text)
     _log_model_call(request_id, "extract", response, "complete" if not missing else "missing")
 
     if missing:
         return StockRequestResult(
             intent=intent,
-            reply=_investment_clarification(missing, user_text),
+            reply=_investment_clarification(missing, user_text, arguments),
         )
 
     tool_calls = [
@@ -191,7 +183,10 @@ def process_stock_request(model_client, messages, investment_portfolio, request_
             "type": "function",
             "function": {
                 "name": call.function.name,
-                "arguments": call.function.arguments,
+                "arguments": json.dumps(
+                    arguments,
+                    ensure_ascii=False,
+                ),
             },
         }
         for call in response.choices[0].message.tool_calls
@@ -331,64 +326,183 @@ def _user_explicitly_mentions_date(text):
     )
 
 
+def _normalize_investment_arguments(arguments, user_text):
+    """Convert legacy flat extraction output to explicit dated transactions."""
+    if isinstance(arguments.get("investments"), list):
+        normalized = dict(arguments)
+    else:
+        tickers = arguments.get("ticker_symbols") or []
+        amounts = arguments.get("amount_of_dollars_to_be_invested") or []
+        shared_date = arguments.get("investment_date")
+        shared_amount = len(tickers) > 1 and len(amounts) == 1 and bool(
+            re.search(r"\b(each|per stock|per ticker|equally|split evenly)\b|每只|每支|各投", user_text, re.IGNORECASE)
+        )
+        normalized = {
+            "investments": [
+                {
+                    "ticker": ticker,
+                    "amount": (
+                        amounts[index] if len(amounts) == len(tickers)
+                        else amounts[0] if len(tickers) == 1 or shared_amount
+                        else None
+                    ),
+                    "investment_date": shared_date,
+                }
+                for index, ticker in enumerate(tickers)
+            ],
+            "interval_of_investment": arguments.get("interval_of_investment", "single_shot"),
+            "to_be_added_in_portfolio": arguments.get("to_be_added_in_portfolio", True),
+        }
+
+    transactions = normalized["investments"]
+    normalized["ticker_symbols"] = list(dict.fromkeys(
+        item.get("ticker") for item in transactions if isinstance(item, dict) and item.get("ticker")
+    ))
+    normalized["amount_of_dollars_to_be_invested"] = [
+        item.get("amount") for item in transactions if isinstance(item, dict)
+    ]
+    dates = [
+        item.get("investment_date") for item in transactions
+        if isinstance(item, dict) and item.get("investment_date")
+    ]
+    normalized["investment_date"] = min(dates) if dates else None
+    return normalized
+
+
+def _explicit_amount_count(text):
+    pattern = r"[$€£¥]\s*\d[\d,.]*|\b\d+(?:[,.]\d+)?\s*(?:k|m|b|thousand|million|billion|dollars?|usd)\b|\d+(?:\.\d+)?\s*(?:美元|美金|元|千|万|百万|亿)"
+    return len(re.findall(pattern, text, re.IGNORECASE))
+
+
+def _company_label(ticker):
+    return {
+        "AAPL": "Apple", "TSLA": "Tesla", "MSFT": "Microsoft",
+        "NVDA": "NVIDIA", "AMZN": "Amazon", "GOOG": "Google",
+        "GOOGL": "Google", "META": "Meta",
+    }.get(str(ticker).upper(), str(ticker))
+
+
 def _missing_investment_fields(arguments, user_text):
     missing = []
-    tickers = arguments.get("ticker_symbols")
-    amounts = arguments.get("amount_of_dollars_to_be_invested")
-    investment_date = arguments.get("investment_date")
+    investments = arguments.get("investments")
+    if not isinstance(investments, list) or not investments:
+        missing.append("ticker")
+        investments = []
 
+    tickers = [item.get("ticker") for item in investments if isinstance(item, dict)]
     if (
-        not isinstance(tickers, list)
-        or not tickers
+        len(tickers) != len(investments)
         or any(not isinstance(ticker, str) or not ticker for ticker in tickers)
-        or not _user_explicitly_mentions_stock(user_text, tickers or [])
+        or any(not _user_explicitly_mentions_stock(user_text, [ticker]) for ticker in tickers)
     ):
         missing.append("ticker")
 
-    invalid_amounts = (
-        not isinstance(amounts, list)
-        or not amounts
-        or any(
-            not isinstance(amount, (int, float))
-            or isinstance(amount, bool)
-            or amount <= 0
-            for amount in amounts
-        )
-        or not _user_explicitly_mentions_amount(user_text)
+    valid_amounts = all(
+        isinstance(item, dict)
+        and isinstance(item.get("amount"), (int, float))
+        and not isinstance(item.get("amount"), bool)
+        and item["amount"] > 0
+        for item in investments
     )
-    if invalid_amounts:
-        missing.append("amount")
-    elif isinstance(tickers, list) and tickers and len(amounts) not in {1, len(tickers)}:
+    explicit_amounts = _explicit_amount_count(user_text)
+    explicit_equal_amount = bool(
+        re.search(r"\b(each|per stock|per ticker|equally|split evenly)\b|每只|每支|各投", user_text, re.IGNORECASE)
+    )
+    if not valid_amounts or not _user_explicitly_mentions_amount(user_text) or (
+        len(investments) > 1 and explicit_amounts < len(investments) and not explicit_equal_amount
+    ):
         missing.append("amount")
 
-    try:
-        datetime.strptime(investment_date, "%Y-%m-%d")
-    except (TypeError, ValueError):
+    valid_dates = True
+    explicit_dates = _explicit_date_count(user_text)
+    transaction_dates = set()
+    for item in investments:
+        value = item.get("investment_date") if isinstance(item, dict) else None
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except (TypeError, ValueError):
+            valid_dates = False
+        else:
+            transaction_dates.add(value)
+    if (
+        not valid_dates
+        or not _user_explicitly_mentions_date(user_text)
+        or len(transaction_dates) > explicit_dates
+        or (explicit_dates > len(transaction_dates) and len(investments) > 1)
+    ):
         missing.append("date")
-    else:
-        if not _user_explicitly_mentions_date(user_text):
-            missing.append("date")
 
     return missing
 
 
-def _investment_clarification(missing_fields, user_text):
-    if re.search(r"[\u3400-\u9fff]", user_text):
-        labels = {
-            "ticker": "股票名称或代码",
-            "amount": "投资金额（总额或每只股票的金额）",
-            "date": "投资开始日期",
-        }
-        details = "、".join(labels[field] for field in missing_fields)
-        return f"我识别到这是投资请求。为了运行投资模拟，请补充：{details}。"
+def _explicit_date_count(text):
+    patterns = (
+        r"\b(?:19|20)\d{2}[-/]\d{1,2}(?:[-/]\d{1,2})?\b",
+        r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{4}\b",
+        r"(?:19|20)\d{2}\s*年\s*\d{1,2}\s*月",
+        r"\b(?:since|from|starting|as of)\s+(?:19|20)\d{2}\b(?![-/])",
+    )
+    return sum(len(re.findall(pattern, text, re.IGNORECASE)) for pattern in patterns)
 
-    labels = {
-        "ticker": "the stock name or ticker",
-        "amount": "the investment amount (total or per-stock)",
-        "date": "the investment start date",
-    }
-    details = ", ".join(labels[field] for field in missing_fields)
-    return f"I identified this as an investment request. Please provide {details} to run the simulation."
+
+def _investment_clarification(missing_fields, user_text, arguments):
+    if re.search(r"[\u3400-\u9fff]", user_text):
+        details = []
+        if "ticker" in missing_fields:
+            details.append("股票名称或代码")
+        if "amount" in missing_fields:
+            names = "和".join(_company_label(item.get("ticker")) for item in arguments.get("investments", []) if isinstance(item, dict) and item.get("ticker"))
+            if len(arguments.get("investments", [])) > 1 and names:
+                details.append(f"分别给{names}投资多少钱")
+            else:
+                details.append("投资金额")
+        if "date" in missing_fields:
+            names = _date_clarification_names(arguments, user_text)
+            if names:
+                details.append(f"{names}的开始日期")
+            else:
+                details.append("投资开始日期")
+        return f"我识别到这是投资请求。为了运行投资模拟，请补充：{'；'.join(details)}。"
+
+    details = []
+    if "ticker" in missing_fields:
+        details.append("the stock name or ticker")
+    if "amount" in missing_fields:
+        names = " and ".join(_company_label(item.get("ticker")) for item in arguments.get("investments", []) if isinstance(item, dict) and item.get("ticker"))
+        if len(arguments.get("investments", [])) > 1 and names:
+            details.append(f"how much to invest in each of {names}")
+        else:
+            details.append("the investment amount")
+    if "date" in missing_fields:
+        names = _date_clarification_names(arguments, user_text)
+        if names:
+            details.append(f"the start date for {names}")
+        else:
+            details.append("the investment start date")
+    return f"I identified this as an investment request. Please provide {', '.join(details)} to run the simulation."
+
+
+def _date_clarification_names(arguments, user_text):
+    investments = arguments.get("investments", [])
+    names = []
+    for item in investments:
+        if not isinstance(item, dict) or not item.get("ticker"):
+            continue
+        try:
+            datetime.strptime(item.get("investment_date"), "%Y-%m-%d")
+        except (TypeError, ValueError):
+            names.append(_company_label(item["ticker"]))
+    if not names and len(investments) > 1:
+        names = [
+            _company_label(item["ticker"])
+            for item in investments
+            if isinstance(item, dict) and item.get("ticker")
+        ]
+    if len(names) == 1:
+        return f"{names[0]} 这笔投资" if re.search(r"[\u3400-\u9fff]", user_text) else names[0]
+    if len(names) > 1:
+        return "、".join(names) if re.search(r"[\u3400-\u9fff]", user_text) else " and ".join(names)
+    return ""
 
 
 def _log_model_call(request_id, stage, response, result):
