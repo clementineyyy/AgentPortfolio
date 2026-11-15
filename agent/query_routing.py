@@ -403,7 +403,7 @@ def _amount_is_ambiguous_across_transactions(arguments, user_text):
             mentions.append((min(match.start() for match in matches), max(match.end() for match in matches)))
 
     mentions.sort()
-    conjunction = re.compile(r"[\s,]*(?:and|&|以及|和|及)[\s,]*", re.IGNORECASE)
+    conjunction = re.compile(r"(?:[\s,]*(?:and|&|以及|和|及)[\s,]*|,\s*)", re.IGNORECASE)
     return any(
         conjunction.fullmatch(user_text[left[1]:right[0]])
         for left, right in zip(mentions, mentions[1:])
