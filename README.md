@@ -33,8 +33,10 @@ This project shows how to create an AI agent that streams the portfolio analysis
      OPENAI_BASE_URL=
      OPENAI_MODEL=gpt-4o-mini
      TWELVEDATA_API_KEY=your-twelve-data-api-key
+     MASSIVE_API_KEY=your-massive-api-key
      ```
    For SiliconFlow, set `OPENAI_BASE_URL=https://api.siliconflow.cn/v1` and use a model ID enabled for your account, such as `deepseek-ai/DeepSeek-V3`. The agent uses an OpenAI-compatible API; the API key must belong to the provider configured by `OPENAI_BASE_URL`.
+   Twelve Data supplies daily closing prices. Massive supplies dividend payment dates; its free Stocks Basic plan documents two years of dividend history, while older backtests require a plan with the needed history. The backend reports missing Massive configuration instead of guessing dividend payment dates.
    - `frontend/.env` (frontend):
      ```env
      OPENAI_API_KEY=your-openai-key

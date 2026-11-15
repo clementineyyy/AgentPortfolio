@@ -18,7 +18,7 @@ import uuid
 import asyncio  
 import json  
 import os  
-from datetime import datetime  
+from datetime import date as date_type, datetime
 
 # External libraries
 from openai import OpenAI  
@@ -30,11 +30,25 @@ import pandas as pd
 if __package__:
     from .prompts import insights_prompt
     from .query_routing import process_stock_request, tool_result_messages
-    from .market_data import MarketDataConfigurationError, MarketDataError, historical_prices
+    from .market_data import (
+        DividendDataConfigurationError,
+        DividendDataError,
+        MarketDataConfigurationError,
+        MarketDataError,
+        historical_dividends,
+        historical_prices,
+    )
 else:
     from prompts import insights_prompt
     from query_routing import process_stock_request, tool_result_messages
-    from market_data import MarketDataConfigurationError, MarketDataError, historical_prices
+    from market_data import (
+        DividendDataConfigurationError,
+        DividendDataError,
+        MarketDataConfigurationError,
+        MarketDataError,
+        historical_dividends,
+        historical_prices,
+    )
 
 # Load environment variables (like API keys) from .env file
 load_dotenv()
@@ -47,7 +61,17 @@ def _has_stock_data(data):
 
 def _append_stock_data_failure_reply(messages, error=None):
     """Ensure a failed market-data lookup produces a user-visible reply."""
-    if isinstance(error, MarketDataConfigurationError):
+    if isinstance(error, DividendDataConfigurationError):
+        content = (
+            "Dividend payment date data is not configured. Set MASSIVE_API_KEY in "
+            "agent/.env to include historical cash dividends in the simulation."
+        )
+    elif isinstance(error, DividendDataError):
+        content = (
+            "I couldn't retrieve complete dividend payment-date data. "
+            "Check the Massive API key and dividend-history access for this date range, then try again."
+        )
+    elif isinstance(error, MarketDataConfigurationError):
         content = (
             "Historical market data is not configured. Set TWELVEDATA_API_KEY in "
             "agent/.env, then restart the backend server."
@@ -64,6 +88,87 @@ def _append_stock_data_failure_reply(messages, error=None):
             id=str(uuid.uuid4()),
         )
     )
+
+
+def _build_backtest_date_notice(requested_date, entry_dates, latest_date, as_of_date):
+    """Explain requested-versus-actual dates without guessing at market closures."""
+    requested = pd.Timestamp(requested_date).normalize()
+    latest = pd.Timestamp(latest_date).normalize()
+    as_of = pd.Timestamp(as_of_date).normalize()
+    notices = []
+
+    shifted_entries = {
+        ticker: pd.Timestamp(entry_date).normalize()
+        for ticker, entry_date in entry_dates.items()
+        if pd.Timestamp(entry_date).normalize() > requested
+    }
+    if shifted_entries:
+        if requested.weekday() >= 5:
+            reason = "指定日期是周末，市场休市"
+        else:
+            reason = "Twelve Data 未返回指定日期的价格，具体原因无法确认"
+        details = ", ".join(
+            f"{ticker} 于 {entry_date.date()} 开始"
+            for ticker, entry_date in shifted_entries.items()
+        )
+        notices.append(
+            f"你指定的开始日期是 {requested.date()}；{reason}，因此模拟从首个返回的交易日开始：{details}。"
+        )
+
+    if latest < as_of:
+        if as_of.weekday() >= 5:
+            reason = "当前日期是周末，市场没有新的交易日收盘数据"
+        else:
+            reason = "数据源尚未返回更新的完整日线，具体原因无法确认"
+        notices.append(
+            f"当前日期是 {as_of.date()}，本次行情数据截至 {latest.date()}；{reason}。"
+        )
+    return "\n\n".join(notices)
+
+
+def _daily_backtest_series(prices, positions, entry_dates, dividends, position_history=None):
+    """Build trading-day portfolio and SPY values, crediting eligible paid dividends."""
+    events = {}
+    for ticker, frame in dividends.items():
+        events[ticker] = frame.to_dict("records")
+
+    result = []
+    dividend_cash = {ticker: 0.0 for ticker in positions}
+    credited = set()
+    for day in prices.index.sort_values():
+        for ticker, ticker_events in events.items():
+            entry_date = entry_dates.get(ticker)
+            if entry_date is None or day < entry_date:
+                continue
+            for idx, event in enumerate(ticker_events):
+                key = (ticker, idx)
+                ex_date = pd.Timestamp(event["ex_date"]).normalize()
+                pay_date = pd.Timestamp(event["pay_date"]).normalize()
+                if position_history:
+                    prior_dates = [trade_day for trade_day in position_history if trade_day < ex_date]
+                    eligible_shares = (
+                        position_history[max(prior_dates)].get(ticker, 0.0)
+                        if prior_dates else 0.0
+                    )
+                else:
+                    eligible_shares = positions.get(ticker, 0.0) if entry_date < ex_date else 0.0
+                if eligible_shares > 0 and pay_date <= day and key not in credited:
+                    dividend_cash[ticker] += eligible_shares * float(event["amount"])
+                    credited.add(key)
+
+        portfolio_value = 0.0
+        for ticker, shares in positions.items():
+            if position_history:
+                shares = position_history.get(day, {}).get(ticker, 0.0)
+            if day < entry_dates.get(ticker, pd.Timestamp.max):
+                continue
+            price = prices.at[day, ticker] if ticker in prices else np.nan
+            if not pd.isna(price):
+                portfolio_value += shares * float(price)
+            portfolio_value += dividend_cash.get(ticker, 0.0)
+
+        result.append({"date": str(day.date()), "portfolio": portfolio_value})
+    return result, dividend_cash
 
 
 def _field(value, name, default=None):
@@ -408,11 +513,11 @@ class StockAnalysisFlow(Flow):
         all_tickers = list(set(tickers + [inv["ticker"] for inv in existing_portfolio]))
         print(f"Debug: Downloading data for all tickers: {all_tickers}")
         
-        end_date = datetime.today().strftime("%Y-%m-%d")
+        end_date = date_type.today().isoformat()
         market_data_error = None
         try:
             frames = [
-                historical_prices(ticker, investment_date, end_date, "3mo").rename(
+                historical_prices(ticker, investment_date, end_date, "1day").rename(
                     columns={"Close": ticker}
                 )
                 for ticker in all_tickers
@@ -608,16 +713,28 @@ class StockAnalysisFlow(Flow):
 
         # Step 4.7: Ensure stock data is sorted chronologically
         stock_data = stock_data.sort_index()
+        requested_date = pd.Timestamp(investment_date).normalize()
+        entry_dates = {}
+        total_invested_per_stock = {ticker: 0.0 for ticker in all_tickers}
+        position_history = {}
 
         # Step 4.8: Execute investment strategy based on interval
         if interval == "single_shot":
-            # SINGLE-SHOT STRATEGY: Buy all shares at the first available date
-            first_date = stock_data.index[0]
-            row = stock_data.loc[first_date]
+            # Buy at the first available close on or after the requested date.
             
             # Loop through each ticker and attempt to buy allocated amount
             for idx, ticker in enumerate(current_tickers):
-                price = row[ticker]
+                ticker_prices = stock_data.loc[stock_data.index >= requested_date, ticker].dropna()
+                if ticker_prices.empty:
+                    _append_stock_data_failure_reply(
+                        self.state["state"]["messages"],
+                        MarketDataError(f"No price data was returned for {ticker} in the requested date range."),
+                    )
+                    self.be_stock_data = pd.DataFrame()
+                    return "end"
+                first_date = ticker_prices.index[0]
+                price = float(ticker_prices.iloc[0])
+                entry_dates[ticker] = first_date
                 
                 # Step 4.8.1: Check if price data is available
                 if np.isnan(price):
@@ -634,23 +751,14 @@ class StockAnalysisFlow(Flow):
                 allocated = amounts[idx]
                 
                 # Step 4.8.3: Check if we have enough cash and allocation is sufficient
-                if total_cash >= allocated and allocated >= price:
-                    shares_to_buy = allocated // price  # Integer division for whole shares
-                    if shares_to_buy > 0:
-                        cost = shares_to_buy * price
-                        holdings[ticker] += shares_to_buy
-                        total_cash -= cost
-                        investment_log.append(
-                            f"{first_date.date()}: Bought {shares_to_buy:.2f} shares of {ticker} at ${price:.2f} (cost: ${cost:.2f})"
-                        )
-                    else:
-                        investment_log.append(
-                            f"{first_date.date()}: Not enough allocated cash to buy {ticker} at ${price:.2f}. Allocated: ${allocated:.2f}"
-                        )
-                        add_funds_needed = True
-                        add_funds_dates.append(
-                            (str(first_date.date()), ticker, price, allocated)
-                        )
+                if total_cash >= allocated and allocated > 0 and price > 0:
+                    shares_to_buy = allocated / price
+                    holdings[ticker] += shares_to_buy
+                    total_invested_per_stock[ticker] = allocated
+                    total_cash -= allocated
+                    investment_log.append(
+                        f"{first_date.date()}: Bought {shares_to_buy:.6f} shares of {ticker} at the daily close ${price:.2f} (cost: ${allocated:.2f})"
+                    )
                 else:
                     # Step 4.8.4: Insufficient funds for this ticker
                     investment_log.append(
@@ -678,9 +786,11 @@ class StockAnalysisFlow(Flow):
                             cost = shares_to_buy * price
                             holdings[ticker] += shares_to_buy
                             total_cash -= cost
-                            investment_log.append(
-                                f"{date.date()}: Bought {shares_to_buy:.2f} shares of {ticker} at ${price:.2f} (cost: ${cost:.2f})"
-                            )
+                        total_invested_per_stock[ticker] += cost
+                        entry_dates.setdefault(ticker, date)
+                        investment_log.append(
+                            f"{date.date()}: Bought {shares_to_buy:.2f} shares of {ticker} at ${price:.2f} (cost: ${cost:.2f})"
+                        )
                     else:
                         # Step 4.8.7: Log when funds are insufficient
                         add_funds_needed = True
@@ -690,62 +800,76 @@ class StockAnalysisFlow(Flow):
                         investment_log.append(
                             f"{date.date()}: Not enough cash to buy {ticker} at ${price:.2f}. Available: ${total_cash:.2f}. Please add more funds."
                         )
+                position_history[date] = holdings.copy()
 
-        # Step 4.9: Calculate final portfolio value and performance metrics
-        final_prices = stock_data.iloc[-1]  # Latest prices for each stock
+        # Step 4.9: Include confirmed dividend payments in daily portfolio values.
+        final_prices = stock_data.iloc[-1]
+        end_date = date_type.today().isoformat()
+        try:
+            dividend_symbols = sorted(set(current_tickers + ["SPY"]))
+            dividend_data = {
+                ticker: historical_dividends(ticker, investment_date, end_date)
+                for ticker in dividend_symbols
+            }
+        except MarketDataError as error:
+            _append_stock_data_failure_reply(self.state["state"]["messages"], error)
+            self.be_stock_data = pd.DataFrame()
+            return "end"
+
+        portfolio_performance, final_dividends = _daily_backtest_series(
+            stock_data,
+            holdings,
+            entry_dates,
+            dividend_data,
+            position_history if interval != "single_shot" else None,
+        )
+        if not entry_dates:
+            _append_stock_data_failure_reply(
+                self.state["state"]["messages"],
+                MarketDataError("No valid entry date was found in the requested date range."),
+            )
+            self.be_stock_data = pd.DataFrame()
+            return "end"
+        first_entry = min(entry_dates.values())
+        portfolio_performance = [
+            point for point in portfolio_performance
+            if pd.Timestamp(point["date"]) >= first_entry
+        ]
+        total_invested = sum(total_invested_per_stock.values())
         total_value = 0.0
-        returns = {}  # Absolute returns for each ticker
-        total_invested_per_stock = {}  # Amount invested in each stock
-        percent_allocation_per_stock = {}  # Percentage allocation for each stock
-        percent_return_per_stock = {}  # Percentage return for each stock
-        total_invested = 0.0
-        
-        # Step 4.10: Calculate total amount invested per stock
-        for idx, ticker in enumerate(current_tickers):
-            # Calculate how much was actually invested in this stock
-            if interval == "single_shot":
-                # Step 4.10.1: For single-shot, only one purchase at first date
-                first_date = stock_data.index[0]
-                price = stock_data.loc[first_date][ticker]
-                shares_bought = holdings[ticker]
-                invested = shares_bought * price
-            else:
-                # Step 4.10.2: For DCA, sum all purchases from the log
-                invested = 0.0
-                for log in investment_log:
-                    if f"shares of {ticker}" in log and "Bought" in log:
-                        # Extract cost from log string
-                        try:
-                            cost_str = log.split("(cost: $")[-1].split(")")[0]
-                            invested += float(cost_str)
-                        except Exception:
-                            pass
-            total_invested_per_stock[ticker] = invested
-            total_invested += invested
-            
-        # Step 4.11: Calculate percentage allocations and returns
+        returns = {}
+        percent_allocation_per_stock = {}
+        percent_return_per_stock = {}
+
         for ticker in all_tickers:
             invested = total_invested_per_stock[ticker]
-            holding_value = holdings[ticker] * final_prices[ticker]  # Current value of holdings
-            returns[ticker] = holding_value - invested  # Absolute return
+            final_price = final_prices[ticker]
+            holding_value = holdings[ticker] * float(final_price) if not pd.isna(final_price) else 0.0
+            ticker_return = holding_value + final_dividends.get(ticker, 0.0) - invested
+            returns[ticker] = ticker_return
             total_value += holding_value
-            
-            # Calculate percentage allocation (what % of total investment went to this stock)
             percent_allocation_per_stock[ticker] = (
-                (invested / total_invested * 100) if total_invested > 0 else 0.0
+                invested / total_invested * 100 if total_invested > 0 else 0.0
             )
-            
-            # Calculate percentage return (how much % this stock gained/lost)
             percent_return_per_stock[ticker] = (
-                ((holding_value - invested) / invested * 100) if invested > 0 else 0.0
+                ticker_return / invested * 100 if invested > 0 else 0.0
             )
-        total_value += total_cash  # Add remaining cash to total portfolio value
 
+        dividend_cash = sum(final_dividends.values())
+        total_cash += dividend_cash
+        total_value += total_cash
+        date_notice = _build_backtest_date_notice(
+            investment_date,
+            entry_dates,
+            stock_data.index[-1],
+            date_type.today(),
+        )
         # Step 4.12: Store investment summary results in state
         self.state['state']["investment_summary"] = {
             "holdings": holdings,  # Number of shares owned for each ticker
             "final_prices": final_prices.to_dict(),  # Current prices
             "cash": total_cash,  # Remaining cash
+            "dividend_cash": dividend_cash,
             "returns": returns,  # Absolute returns per ticker
             "total_value": total_value,  # Total portfolio value
             "investment_log": investment_log,  # Transaction history
@@ -761,135 +885,57 @@ class StockAnalysisFlow(Flow):
         # BENCHMARK COMPARISON - Portfolio vs SPY (S&P 500)
         # ===============================================================================
         
-        # Step 4.13: Get SPY (S&P 500) prices for benchmark comparison
-        spy_ticker = "SPY"
-        spy_prices = None
-        spy_shares = 0.0
-        spy_cash = total_invested
-        spy_invested = 0.0
-        spy_investment_log = []
-        
+        # Step 4.13: Get daily SPY prices over the same requested backtest window.
         try:
-            # Download SPY data for the same time period as stock_data
-            # Use start and end dates from stock_data, with daily interval for better granularity
-            start_date = stock_data.index[0]
-            end_date = stock_data.index[-1]
             spy_prices = historical_prices(
-                spy_ticker,
-                start_date.strftime("%Y-%m-%d"),
-                end_date.strftime("%Y-%m-%d"),
-                "1day",
+                "SPY", investment_date, end_date, "1day"
             )["Close"]
-            
-            # Fix: Use the first available SPY date if our start date doesn't exist
-            if spy_prices.index[0] > start_date:
-                print(f"Debug SPY: Adjusting start date from {start_date} to {spy_prices.index[0]}")
-                # Update our stock_data to start from the first available SPY date
-                stock_data = stock_data.loc[spy_prices.index[0]:]
-                # Don't recalculate total_invested - keep the original value
-                print(f"Debug SPY: Keeping original total_invested: ${total_invested:.2f}")
-            
-            # Ensure SPY data is properly formatted
-            if isinstance(spy_prices, pd.DataFrame):
-                spy_prices = spy_prices.iloc[:, 0]  # Take first column if DataFrame
-            
-            # Align SPY prices to our stock_data dates using forward fill
-            spy_prices = spy_prices.reindex(stock_data.index, method="ffill")
-        except MarketDataError as e:
-            print(f"SPY benchmark lookup failed: {e}")
-            _append_stock_data_failure_reply(self.state['state']["messages"], e)
+        except MarketDataError as error:
+            _append_stock_data_failure_reply(self.state["state"]["messages"], error)
+            self.be_stock_data = pd.DataFrame()
             return "end"
 
-        # Step 4.14: Simulate investing the same total amount in SPY for comparison
-        spy_shares = 0.0
-        spy_cash = total_invested  # Use same amount invested in our portfolio
-        spy_invested = 0.0
-        spy_investment_log = []
-        
-        print(f"Debug SPY: Initializing with total_invested: ${total_invested:.2f}, spy_cash: ${spy_cash:.2f}")
-        
-        # SPY data fetched successfully
-        
-        if interval == "single_shot":
-            # Step 4.14.1: Single-shot SPY investment
-            first_date = stock_data.index[0]
-            spy_price = spy_prices.loc[first_date]
-            if isinstance(spy_price, pd.Series):
-                spy_price = spy_price.iloc[0]
-            if not pd.isna(spy_price) and spy_price > 0:
-                spy_shares = spy_cash / spy_price
-                spy_invested = spy_shares * spy_price
-                spy_cash -= spy_invested
-                spy_investment_log.append(
-                    f"{first_date.date()}: Bought {spy_shares:.2f} shares of SPY at ${spy_price:.2f} (cost: ${spy_invested:.2f})"
-                )
-                print(f"Debug SPY: Single-shot investment - Shares: {spy_shares:.4f}, Price: ${spy_price:.2f}, Invested: ${spy_invested:.2f}")
-            else:
-                print(f"Debug SPY: Invalid price for single-shot investment - Price: {spy_price}")
-        else:
-            # Step 4.14.2: DCA SPY investment - spread equal amounts over time
-            dca_amount = total_invested / len(stock_data)
-            for date in stock_data.index:
-                spy_price = spy_prices.loc[date]
-                if isinstance(spy_price, pd.Series):
-                    spy_price = spy_price.iloc[0]
-                if not pd.isna(spy_price) and spy_price > 0:
-                    shares = dca_amount / spy_price
-                    cost = shares * spy_price
-                    spy_shares += shares
-                    spy_cash -= cost
-                    spy_invested += cost
-                    spy_investment_log.append(
-                        f"{date.date()}: Bought {shares:.2f} shares of SPY at ${spy_price:.2f} (cost: ${cost:.2f})"
-                    )
-            print(f"Debug SPY: DCA investment - Total shares: {spy_shares:.4f}, Total invested: ${spy_invested:.2f}")
+        spy_prices = spy_prices.loc[spy_prices.index >= requested_date].dropna()
+        if spy_prices.empty:
+            _append_stock_data_failure_reply(
+                self.state["state"]["messages"],
+                MarketDataError("No SPY prices were returned for the requested benchmark date range."),
+            )
+            self.be_stock_data = pd.DataFrame()
+            return "end"
+        spy_entry_date = spy_prices.index[0]
+        spy_entry_price = float(spy_prices.iloc[0])
+        if spy_entry_price <= 0:
+            _append_stock_data_failure_reply(
+                self.state["state"]["messages"],
+                MarketDataError("The first SPY closing price is invalid."),
+            )
+            self.be_stock_data = pd.DataFrame()
+            return "end"
+        spy_shares = total_invested / spy_entry_price
+        spy_entry_dates = {"SPY": spy_entry_date}
+        spy_values, _ = _daily_backtest_series(
+            spy_prices.to_frame("SPY"),
+            {"SPY": spy_shares},
+            spy_entry_dates,
+            {"SPY": dividend_data["SPY"]},
+        )
+        spy_value_by_date = {point["date"]: point["portfolio"] for point in spy_values}
 
-        # Step 4.15: Build performance comparison data for charting
-        performanceData = []
-        running_holdings = holdings.copy()
-        running_cash = total_cash
-        
-        # Build performance comparison data for charting
-        
-        for date in stock_data.index:
-            # Step 4.15.1: Calculate portfolio value at each date
-            port_value = (
-                sum(
-                    running_holdings[t] * stock_data.loc[date][t]
-                    for t in all_tickers
-                    if t in running_holdings and not pd.isna(stock_data.loc[date][t])
-                )
-                # Note: Not adding cash here since we want pure investment performance
-            )
-            
-            # Step 4.15.2: Calculate SPY value at each date
-            spy_price = spy_prices.loc[date]
-            if isinstance(spy_price, pd.Series):
-                spy_price = spy_price.iloc[0]
-            
-            # SPY price calculation for this date
-            
-            # Calculate SPY portfolio value: shares * current_price (no cash remaining after investment)
-            spy_val = (
-                spy_shares * spy_price if not pd.isna(spy_price) else None
-            )
-            
-            # Debug: Print first few SPY calculations
-            if len(performanceData) < 3:
-                print(f"Debug SPY: Date: {date}, SPY price: {spy_price}, SPY shares: {spy_shares}, SPY value: {spy_val}")
-            
-            
-            # SPY portfolio value calculated for this date
-            
-            # Step 4.15.3: Add data point for this date
-            performanceData.append(
-                {
-                    "date": str(date.date()),
-                    "portfolio": float(port_value) if port_value is not None else None,
-                    "spy": float(spy_val) if spy_val is not None else None,
-                }
-            )
-
+        date_notice = _build_backtest_date_notice(
+            investment_date,
+            {**entry_dates, **spy_entry_dates},
+            stock_data.index[-1],
+            date_type.today(),
+        )
+        performanceData = [
+            {
+                "date": point["date"],
+                "portfolio": point["portfolio"],
+                "spy": spy_value_by_date.get(point["date"]),
+            }
+            for point in portfolio_performance
+        ]
         # Step 4.16: Add performance data to investment summary
         self.state['state']["investment_summary"]["performanceData"] = performanceData
 
@@ -914,6 +960,18 @@ class StockAnalysisFlow(Flow):
                 id=str(uuid.uuid4()),
                 content="The relevant details had been extracted",
                 tool_call_id=last_assistant_message.tool_calls[0].id,
+            )
+        )
+
+        disclosure = (
+            "本次为历史模拟：按首个交易日收盘价买入，使用碎股，并按交易日收盘价估值。"
+            "符合除息日持仓条件的股息在派息日计入现金，不自动再投资；未计手续费、税费和买卖价差。"
+        )
+        self.state["state"]["messages"].append(
+            AssistantMessage(
+                role="assistant",
+                content=f"{date_notice}\n\n{disclosure}" if date_notice else disclosure,
+                id=str(uuid.uuid4()),
             )
         )
 

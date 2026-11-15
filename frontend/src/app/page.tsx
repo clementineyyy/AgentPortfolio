@@ -45,6 +45,7 @@ export interface PortfolioState {
     emoji: string
   }>
   totalReturns: number
+  dividendCash: number
 }
 
 export interface SandBoxPortfolioState {
@@ -79,6 +80,7 @@ function createBenchmarkData(totalCash: number): PortfolioState {
     bullInsights: [],
     bearInsights: [],
     totalReturns: 0,
+    dividendCash: 0,
     currentPortfolioValue: totalCash,
   }
 }
@@ -151,7 +153,8 @@ export default function OpenStocksCanvas() {
                       bearInsights: args?.insights?.bearInsights || [],
                       currentPortfolioValue: args?.investment_summary?.total_value,
                       totalReturns: (Object.values(args?.investment_summary?.returns) as number[])
-                        .reduce((acc, val) => acc + val, 0)
+                        .reduce((acc, val) => acc + val, 0),
+                      dividendCash: Number(args?.investment_summary?.dividend_cash || 0)
                     })
                     setInvestedAmount(
                       (Object.values(args?.investment_summary?.total_invested_per_stock) as number[])
@@ -159,7 +162,7 @@ export default function OpenStocksCanvas() {
                     )
                     setState({
                       ...state,
-                      available_cash: totalCash,
+                      available_cash: args?.investment_summary?.cash,
                     })
                     respond("Data rendered successfully. Provide summary of the investments by not making any tool calls")
                   }
@@ -259,7 +262,7 @@ export default function OpenStocksCanvas() {
           <CashPanel
             totalCash={totalCash}
             investedAmount={investedAmount}
-            currentPortfolioValue={(totalCash + investedAmount + currentState.totalReturns) || 0}
+            currentPortfolioValue={(totalCash + investedAmount + currentState.totalReturns - currentState.dividendCash) || 0}
             onTotalCashChange={setTotalCash}
             onStateCashChange={setState}
           />
