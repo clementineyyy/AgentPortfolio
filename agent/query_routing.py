@@ -371,6 +371,45 @@ def _company_label(ticker):
     }.get(str(ticker).upper(), str(ticker))
 
 
+def _amount_is_ambiguous_across_transactions(arguments, user_text):
+    investments = arguments.get("investments", [])
+    if len(investments) < 2 or _explicit_amount_count(user_text) != 1:
+        return False
+    if re.search(r"\b(each|per stock|per ticker|equally|split evenly)\b|每只|每支|各投", user_text, re.IGNORECASE):
+        return False
+
+    aliases = {
+        "AAPL": ("AAPL", "Apple", "苹果", "蘋果"),
+        "TSLA": ("TSLA", "Tesla", "特斯拉"),
+        "MSFT": ("MSFT", "Microsoft", "微软", "微軟"),
+        "NVDA": ("NVDA", "NVIDIA", "英伟达", "英偉達"),
+        "AMZN": ("AMZN", "Amazon", "亚马逊", "亞馬遜"),
+        "GOOG": ("GOOG", "Google", "Alphabet", "谷歌"),
+        "GOOGL": ("GOOGL", "Google", "Alphabet", "谷歌"),
+        "META": ("META", "Meta", "Facebook", "脸书", "臉書"),
+    }
+    mentions = []
+    for item in investments:
+        if not isinstance(item, dict) or not item.get("ticker"):
+            continue
+        ticker = str(item["ticker"]).upper()
+        ticker_aliases = aliases.get(ticker, (ticker,))
+        matches = [
+            match
+            for alias in ticker_aliases
+            for match in re.finditer(re.escape(alias), user_text, re.IGNORECASE)
+        ]
+        if matches:
+            mentions.append((min(match.start() for match in matches), max(match.end() for match in matches)))
+
+    mentions.sort()
+    conjunction = re.compile(r"[\s,]*(?:and|&|以及|和|及)[\s,]*", re.IGNORECASE)
+    return any(
+        conjunction.fullmatch(user_text[left[1]:right[0]])
+        for left, right in zip(mentions, mentions[1:])
+    )
+
+
 def _missing_investment_fields(arguments, user_text):
     missing = []
     investments = arguments.get("investments")
@@ -440,12 +479,11 @@ def _investment_clarification(missing_fields, user_text, arguments):
         if "ticker" in missing_fields:
             details.append("股票名称或代码")
         if "amount" in missing_fields:
-            missing_amount_names = [
+            ambiguous_total = _amount_is_ambiguous_across_transactions(arguments, user_text)
+            missing_amount_names = [] if ambiguous_total else [
                 _company_label(item["ticker"])
                 for item in arguments.get("investments", [])
-                if isinstance(item, dict)
-                and item.get("ticker")
-                and not _is_valid_amount(item.get("amount"))
+                if isinstance(item, dict) and item.get("ticker") and not _is_valid_amount(item.get("amount"))
             ]
             if not missing_amount_names and len(arguments.get("investments", [])) > 1:
                 missing_amount_names = [
@@ -470,12 +508,11 @@ def _investment_clarification(missing_fields, user_text, arguments):
     if "ticker" in missing_fields:
         details.append("the stock name or ticker")
     if "amount" in missing_fields:
-        missing_amount_names = [
+        ambiguous_total = _amount_is_ambiguous_across_transactions(arguments, user_text)
+        missing_amount_names = [] if ambiguous_total else [
             _company_label(item["ticker"])
             for item in arguments.get("investments", [])
-            if isinstance(item, dict)
-            and item.get("ticker")
-            and not _is_valid_amount(item.get("amount"))
+            if isinstance(item, dict) and item.get("ticker") and not _is_valid_amount(item.get("amount"))
         ]
         if not missing_amount_names and len(arguments.get("investments", [])) > 1:
             missing_amount_names = [
