@@ -121,7 +121,7 @@ class QueryRoutingTest(unittest.TestCase):
                 "extract_relevant_data_from_user_prompt",
                 {
                     "investments": [
-                        {"ticker": "AAPL", "amount": 5000, "investment_date": "2026-01-01"},
+                        {"ticker": "AAPL", "amount": None, "investment_date": "2026-01-01"},
                         {"ticker": "TSLA", "amount": None, "investment_date": "2026-01-01"},
                     ],
                     "interval_of_investment": "single_shot",
@@ -139,6 +139,33 @@ class QueryRoutingTest(unittest.TestCase):
         self.assertIsNone(result.tool_calls)
         self.assertIn("Apple", result.reply)
         self.assertIn("Tesla", result.reply)
+
+    def test_missing_amount_only_asks_for_the_transaction_without_an_amount(self):
+        client = Mock()
+        client.chat.completions.create.side_effect = [
+            tool_response("classify_stock_request", {"intent": "investment"}),
+            tool_response(
+                "extract_relevant_data_from_user_prompt",
+                {
+                    "investments": [
+                        {"ticker": "AAPL", "amount": 5000, "investment_date": "2026-01-01"},
+                        {"ticker": "TSLA", "amount": None, "investment_date": "2026-01-01"},
+                    ],
+                    "interval_of_investment": "single_shot",
+                    "to_be_added_in_portfolio": True,
+                },
+            ),
+        ]
+
+        result = process_stock_request(
+            client,
+            [{"role": "user", "content": "Invest 5k in Apple since Jan 2026, then invest in Tesla from that same date"}],
+            [],
+        )
+
+        self.assertIsNone(result.tool_calls)
+        self.assertIn("Tesla", result.reply)
+        self.assertNotIn("Apple", result.reply)
 
     def test_multiple_explicit_dates_are_not_collapsed_to_one_shared_date(self):
         client = Mock()

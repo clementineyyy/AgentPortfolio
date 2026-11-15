@@ -312,18 +312,7 @@ def _user_explicitly_mentions_amount(text):
 
 
 def _user_explicitly_mentions_date(text):
-    return bool(
-        re.search(r"\b(?:19|20)\d{2}[-/]\d{1,2}(?:[-/]\d{1,2})?\b", text)
-        or re.search(
-            r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
-            r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
-            r"\s+\d{4}\b",
-            text,
-            re.IGNORECASE,
-        )
-        or re.search(r"(?:19|20)\d{2}\s*年\s*\d{1,2}\s*月", text)
-        or re.search(r"\b(?:since|from|starting|as of)\s+(?:19|20)\d{2}\b", text, re.IGNORECASE)
-    )
+    return _explicit_date_count(text) > 0
 
 
 def _normalize_investment_arguments(arguments, user_text):
@@ -451,7 +440,20 @@ def _investment_clarification(missing_fields, user_text, arguments):
         if "ticker" in missing_fields:
             details.append("股票名称或代码")
         if "amount" in missing_fields:
-            names = "和".join(_company_label(item.get("ticker")) for item in arguments.get("investments", []) if isinstance(item, dict) and item.get("ticker"))
+            missing_amount_names = [
+                _company_label(item["ticker"])
+                for item in arguments.get("investments", [])
+                if isinstance(item, dict)
+                and item.get("ticker")
+                and not _is_valid_amount(item.get("amount"))
+            ]
+            if not missing_amount_names and len(arguments.get("investments", [])) > 1:
+                missing_amount_names = [
+                    _company_label(item["ticker"])
+                    for item in arguments.get("investments", [])
+                    if isinstance(item, dict) and item.get("ticker")
+                ]
+            names = "和".join(missing_amount_names)
             if len(arguments.get("investments", [])) > 1 and names:
                 details.append(f"分别给{names}投资多少钱")
             else:
@@ -468,7 +470,20 @@ def _investment_clarification(missing_fields, user_text, arguments):
     if "ticker" in missing_fields:
         details.append("the stock name or ticker")
     if "amount" in missing_fields:
-        names = " and ".join(_company_label(item.get("ticker")) for item in arguments.get("investments", []) if isinstance(item, dict) and item.get("ticker"))
+        missing_amount_names = [
+            _company_label(item["ticker"])
+            for item in arguments.get("investments", [])
+            if isinstance(item, dict)
+            and item.get("ticker")
+            and not _is_valid_amount(item.get("amount"))
+        ]
+        if not missing_amount_names and len(arguments.get("investments", [])) > 1:
+            missing_amount_names = [
+                _company_label(item["ticker"])
+                for item in arguments.get("investments", [])
+                if isinstance(item, dict) and item.get("ticker")
+            ]
+        names = " and ".join(missing_amount_names)
         if len(arguments.get("investments", [])) > 1 and names:
             details.append(f"how much to invest in each of {names}")
         else:
@@ -503,6 +518,14 @@ def _date_clarification_names(arguments, user_text):
     if len(names) > 1:
         return "、".join(names) if re.search(r"[\u3400-\u9fff]", user_text) else " and ".join(names)
     return ""
+
+
+def _is_valid_amount(amount):
+    return (
+        isinstance(amount, (int, float))
+        and not isinstance(amount, bool)
+        and amount > 0
+    )
 
 
 def _log_model_call(request_id, stage, response, result):

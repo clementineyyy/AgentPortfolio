@@ -223,6 +223,76 @@ def _plan_single_shot_transactions(prices, transactions, starting_cash):
     }
 
 
+def _plan_recurring_transactions(prices, transactions, starting_cash, interval):
+    """Schedule recurring purchases from each transaction's own start date."""
+    offsets = {
+        "1d": pd.Timedelta(days=1), "5d": pd.Timedelta(days=5),
+        "7d": pd.Timedelta(days=7), "1mo": pd.DateOffset(months=1),
+        "3mo": pd.DateOffset(months=3), "6mo": pd.DateOffset(months=6),
+        "1y": pd.DateOffset(years=1), "2y": pd.DateOffset(years=2),
+        "3y": pd.DateOffset(years=3), "4y": pd.DateOffset(years=4),
+        "5y": pd.DateOffset(years=5),
+    }
+    offset = offsets[interval]
+    tickers = list(dict.fromkeys(item["ticker"] for item in transactions))
+    holdings = {ticker: 0.0 for ticker in tickers}
+    invested = {ticker: 0.0 for ticker in tickers}
+    entry_dates = {}
+    investment_log = []
+    add_funds_dates = []
+    position_history = {}
+    total_cash = float(starting_cash)
+    purchases_by_date = {}
+    latest_date = prices.index.max().normalize()
+
+    for transaction in transactions:
+        ticker = transaction["ticker"]
+        scheduled_date = pd.Timestamp(transaction["investment_date"]).normalize()
+        ticker_prices = prices[ticker].dropna()
+        if ticker_prices.loc[ticker_prices.index >= scheduled_date].empty:
+            return {"unavailable_ticker": ticker}
+        seen_entry_dates = set()
+        while scheduled_date <= latest_date:
+            future_prices = ticker_prices.loc[ticker_prices.index >= scheduled_date]
+            if future_prices.empty:
+                break
+            entry_date = future_prices.index[0]
+            if entry_date not in seen_entry_dates:
+                purchases_by_date.setdefault(entry_date, []).append(
+                    (ticker, float(transaction["amount"]), float(future_prices.iloc[0]))
+                )
+                seen_entry_dates.add(entry_date)
+            scheduled_date = scheduled_date + offset
+
+    for day in prices.index.sort_values():
+        for ticker, amount, price in purchases_by_date.get(day, []):
+            entry_dates.setdefault(ticker, day)
+            if total_cash >= amount and amount > 0 and price > 0:
+                shares = amount / price
+                holdings[ticker] += shares
+                invested[ticker] += amount
+                total_cash -= amount
+                investment_log.append(
+                    f"{day.date()}: Bought {shares:.6f} shares of {ticker} at the daily close ${price:.2f} (cost: ${amount:.2f})"
+                )
+            else:
+                add_funds_dates.append((str(day.date()), ticker, price, total_cash))
+                investment_log.append(
+                    f"{day.date()}: Not enough total cash to buy {ticker}. Allocated: ${amount:.2f}, Available: ${total_cash:.2f}"
+                )
+        position_history[day] = holdings.copy()
+
+    return {
+        "holdings": holdings,
+        "total_invested_per_stock": invested,
+        "entry_dates": entry_dates,
+        "investment_log": investment_log,
+        "add_funds_dates": add_funds_dates,
+        "total_cash": total_cash,
+        "position_history": position_history,
+    }
+
+
 def _field(value, name, default=None):
     """Read a field from AG-UI's dict or typed message representations."""
     if isinstance(value, dict):
@@ -785,37 +855,23 @@ class StockAnalysisFlow(Flow):
             total_cash = plan["total_cash"]
             position_history = plan["position_history"]
         else:
-            # DOLLAR-COST AVERAGING (DCA) STRATEGY: Spread investments over time
-            for date, row in stock_data.iterrows():
-                for i, ticker in enumerate(current_tickers):
-                    price = row[ticker]
-                    
-                    # Step 4.8.5: Skip if no price data available
-                    if np.isnan(price):
-                        continue  # skip if price is NaN
-                        
-                    # Step 4.8.6: Invest as much as possible for this ticker at this date
-                    if total_cash >= price:
-                        shares_to_buy = total_cash // price
-                        if shares_to_buy > 0:
-                            cost = shares_to_buy * price
-                            holdings[ticker] += shares_to_buy
-                            total_cash -= cost
-                        total_invested_per_stock[ticker] += cost
-                        entry_dates.setdefault(ticker, date)
-                        investment_log.append(
-                            f"{date.date()}: Bought {shares_to_buy:.2f} shares of {ticker} at ${price:.2f} (cost: ${cost:.2f})"
-                        )
-                    else:
-                        # Step 4.8.7: Log when funds are insufficient
-                        add_funds_needed = True
-                        add_funds_dates.append(
-                            (str(date.date()), ticker, price, total_cash)
-                        )
-                        investment_log.append(
-                            f"{date.date()}: Not enough cash to buy {ticker} at ${price:.2f}. Available: ${total_cash:.2f}. Please add more funds."
-                        )
-                position_history[date] = holdings.copy()
+            plan = _plan_recurring_transactions(stock_data, transactions, total_cash, interval)
+            if "unavailable_ticker" in plan:
+                ticker = plan["unavailable_ticker"]
+                _append_stock_data_failure_reply(
+                    self.state["state"]["messages"],
+                    MarketDataError(f"No price data was returned for {ticker} in the requested date range."),
+                )
+                self.be_stock_data = pd.DataFrame()
+                return "end"
+            holdings.update(plan["holdings"])
+            entry_dates.update(plan["entry_dates"])
+            total_invested_per_stock.update(plan["total_invested_per_stock"])
+            investment_log.extend(plan["investment_log"])
+            add_funds_dates.extend(plan["add_funds_dates"])
+            add_funds_needed = bool(add_funds_dates)
+            total_cash = plan["total_cash"]
+            position_history = plan["position_history"]
 
         # Step 4.9: Include confirmed dividend payments in daily portfolio values.
         final_prices = stock_data.iloc[-1]

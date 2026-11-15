@@ -14,7 +14,7 @@ You extract parameters only after the request has already been classified as an 
 Read the latest user message. Extract only information the user explicitly provided:
 - investments: one object per investment transaction, in the order stated. Each object has ticker, amount, and investment_date. Resolve unambiguous company names to tickers. Keep repeated purchases of the same company as separate objects.
 - Normalize each explicitly stated date to YYYY-MM-DD. When wording clearly gives one date to all listed transactions, copy it to each applicable object. Otherwise set an unclear/missing date to null.
-- Map each amount only when the wording clearly associates it with a transaction. Never split a single total among multiple companies or assign multiple amounts by order unless the prompt clearly pairs them. Leave unclear/missing amounts null so the application can ask.
+- Map each amount only when the wording clearly associates it with a transaction. Never split a single total among multiple companies or assign multiple amounts by order unless the prompt clearly pairs them. If one amount could refer to multiple companies, leave the amount null for every affected transaction so the application can ask.
 - to_be_added_in_portfolio: true for an explicit request to invest/add to the user's portfolio; false only for an explicit sandbox/hypothetical request.
 
 Never invent or assume a ticker, amount, or start date. Never fill missing values from examples or portfolio data. If a required value is absent or its association is unclear, return null for that field so the application can ask the user.

@@ -5,6 +5,7 @@ import pandas as pd
 from agent.stock_analysis import (
     _build_backtest_date_notice,
     _daily_backtest_series,
+    _plan_recurring_transactions,
     _plan_single_shot_transactions,
 )
 
@@ -45,6 +46,30 @@ class BacktestDateNoticeTest(unittest.TestCase):
 
 
 class DailyBacktestSeriesTest(unittest.TestCase):
+    def test_recurring_transactions_start_on_their_own_dates(self):
+        prices = pd.DataFrame(
+            {"AAPL": [100.0, 110.0, 120.0, 130.0], "TSLA": [50.0, 55.0, 60.0, 65.0]},
+            index=pd.to_datetime(["2026-01-02", "2026-01-05", "2026-06-01", "2026-06-02"]),
+        )
+        transactions = [
+            {"ticker": "AAPL", "amount": 1000, "investment_date": "2026-01-01"},
+            {"ticker": "TSLA", "amount": 1000, "investment_date": "2026-06-01"},
+        ]
+
+        plan = _plan_recurring_transactions(prices, transactions, 50000, "1d")
+        values, _ = _daily_backtest_series(
+            prices,
+            plan["holdings"],
+            plan["entry_dates"],
+            {"AAPL": pd.DataFrame(), "TSLA": pd.DataFrame()},
+            plan["position_history"],
+        )
+
+        self.assertEqual(plan["entry_dates"]["AAPL"], pd.Timestamp("2026-01-02"))
+        self.assertEqual(plan["entry_dates"]["TSLA"], pd.Timestamp("2026-06-01"))
+        self.assertEqual(values[0]["portfolio"], 1000)
+        self.assertEqual(plan["total_invested_per_stock"]["TSLA"], 2000)
+
     def test_transactions_enter_on_their_own_dates_and_positions_grow_over_time(self):
         prices = pd.DataFrame(
             {"AAPL": [100.0, 110.0, 120.0], "TSLA": [50.0, 60.0, 70.0]},
@@ -69,6 +94,29 @@ class DailyBacktestSeriesTest(unittest.TestCase):
         self.assertEqual(values[0]["portfolio"], 5000)
         self.assertEqual(values[1]["portfolio"], 15500)
         self.assertEqual(plan["total_invested_per_stock"], {"AAPL": 5000, "TSLA": 10000})
+
+    def test_repeated_purchases_of_one_ticker_remain_separate_transactions(self):
+        prices = pd.DataFrame(
+            {"AAPL": [100.0, 200.0]},
+            index=pd.to_datetime(["2026-01-02", "2026-06-01"]),
+        )
+        transactions = [
+            {"ticker": "AAPL", "amount": 1000, "investment_date": "2026-01-01"},
+            {"ticker": "AAPL", "amount": 2000, "investment_date": "2026-06-01"},
+        ]
+
+        plan = _plan_single_shot_transactions(prices, transactions, 5000)
+        values, _ = _daily_backtest_series(
+            prices,
+            plan["holdings"],
+            plan["entry_dates"],
+            {"AAPL": pd.DataFrame()},
+            plan["position_history"],
+        )
+
+        self.assertEqual(plan["total_invested_per_stock"], {"AAPL": 3000})
+        self.assertEqual(values[0]["portfolio"], 1000)
+        self.assertEqual(values[1]["portfolio"], 4000)
 
     def test_daily_values_include_dividend_cash_only_on_pay_date(self):
         prices = pd.DataFrame(
